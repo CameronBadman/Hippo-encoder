@@ -17,6 +17,7 @@ class RangedFormulaTerm:
     end_value: float | None = None
     center_ratio: float | None = None
     width_ratio: float | None = None
+    margin: float | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -66,6 +67,7 @@ class FormulaRegionProgram:
         cls,
         anchor: torch.Tensor,
         positives: torch.Tensor,
+        negatives: torch.Tensor | None = None,
         base_radius: float = 0.01,
         radius_scale: float = 1.0,
         max_terms_per_side: int = 12,
@@ -84,12 +86,18 @@ class FormulaRegionProgram:
             base_radius=base_radius,
             max_terms=max_terms_per_side,
             target_name="minus",
+            negatives=negatives,
+            anchor=anchor,
+            side="minus",
         )
         plus_terms = fit_ranged_formula_terms(
             target=plus,
             base_radius=base_radius,
             max_terms=max_terms_per_side,
             target_name="plus",
+            negatives=negatives,
+            anchor=anchor,
+            side="plus",
         )
         return cls(
             dimensions=anchor.shape[0],
@@ -125,6 +133,8 @@ class FormulaRegionProgram:
                 width_ratio = max(term.width_ratio if term.width_ratio is not None else 0.25, 1e-4)
                 local_x = torch.linspace(0.0, 1.0, steps=span, device=target.device, dtype=target.dtype)
                 values = term.amplitude * torch.exp(-0.5 * ((local_x - center_ratio) / width_ratio) ** 2)
+            elif term.term_type == "box":
+                values = torch.full_like(target[start : end + 1], term.amplitude)
             else:
                 raise ValueError(f"Unsupported term type: {term.term_type}")
 
@@ -136,6 +146,9 @@ def fit_ranged_formula_terms(
     base_radius: float,
     max_terms: int,
     target_name: str,
+    negatives: torch.Tensor | None,
+    anchor: torch.Tensor,
+    side: str,
     min_segment_length: int = 8,
     top_segments: int = 4,
 ) -> list[RangedFormulaTerm]:
@@ -148,6 +161,8 @@ def fit_ranged_formula_terms(
 
     segments = _find_top_segments(residual, min_segment_length=min_segment_length, top_k=top_segments)
     terms: list[RangedFormulaTerm] = []
+
+    candidates: list[tuple[float, RangedFormulaTerm]] = []
 
     for start, end in segments:
         if len(terms) >= max_terms:
@@ -169,47 +184,98 @@ def fit_ranged_formula_terms(
         variance = float((weights * (positions - mean_pos) ** 2).sum().item())
         width_ratio = max(0.08, min(0.5, math.sqrt(max(variance, 1e-5)) * 1.5))
 
-        terms.append(
-            RangedFormulaTerm(
-                target=target_name,
-                term_type="const",
-                start=start,
-                end=end,
-                amplitude=mean_value,
+        candidates.append(
+            _score_candidate(
+                term=RangedFormulaTerm(
+                    target=target_name,
+                    term_type="const",
+                    start=start,
+                    end=end,
+                    amplitude=mean_value,
+                ),
+                negatives=negatives,
+                anchor=anchor,
+                side=side,
             )
         )
-        if len(terms) >= max_terms:
-            break
+
+        candidates.append(
+            _score_candidate(
+                term=RangedFormulaTerm(
+                    target=target_name,
+                    term_type="box",
+                    start=start,
+                    end=end,
+                    amplitude=max(start_value, end_value, mean_value),
+                ),
+                negatives=negatives,
+                anchor=anchor,
+                side=side,
+            )
+        )
 
         if abs(end_value - start_value) >= 0.01:
-            terms.append(
-                RangedFormulaTerm(
-                    target=target_name,
-                    term_type="ramp",
-                    start=start,
-                    end=end,
-                    amplitude=end_value,
-                    start_value=start_value,
-                    end_value=end_value,
+            candidates.append(
+                _score_candidate(
+                    term=RangedFormulaTerm(
+                        target=target_name,
+                        term_type="ramp",
+                        start=start,
+                        end=end,
+                        amplitude=end_value,
+                        start_value=start_value,
+                        end_value=end_value,
+                    ),
+                    negatives=negatives,
+                    anchor=anchor,
+                    side=side,
                 )
             )
-            if len(terms) >= max_terms:
-                break
 
         if peak_value >= mean_value + 0.01:
-            terms.append(
-                RangedFormulaTerm(
-                    target=target_name,
-                    term_type="gaussian",
-                    start=start,
-                    end=end,
-                    amplitude=max(0.0, peak_value - mean_value),
-                    center_ratio=center_ratio,
-                    width_ratio=width_ratio,
+            candidates.append(
+                _score_candidate(
+                    term=RangedFormulaTerm(
+                        target=target_name,
+                        term_type="gaussian",
+                        start=start,
+                        end=end,
+                        amplitude=max(0.0, peak_value - mean_value),
+                        center_ratio=center_ratio,
+                        width_ratio=width_ratio,
+                    ),
+                    negatives=negatives,
+                    anchor=anchor,
+                    side=side,
                 )
             )
 
-    return terms[:max_terms]
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    selected = [term for _, term in candidates[:max_terms]]
+    return selected
+
+
+def _score_candidate(
+    term: RangedFormulaTerm,
+    negatives: torch.Tensor | None,
+    anchor: torch.Tensor,
+    side: str,
+) -> tuple[float, RangedFormulaTerm]:
+    # Prefer terms with large positive support, but penalize terms that likely widen regions
+    # along dimensions where negatives already sit close to the anchor.
+    length = term.end - term.start + 1
+    base_score = term.amplitude * length
+    if negatives is None or negatives.numel() == 0:
+        return base_score, term
+
+    negative_slice = negatives[:, term.start : term.end + 1]
+    anchor_slice = anchor[term.start : term.end + 1].unsqueeze(0)
+    if side == "minus":
+        closeness = torch.relu(anchor_slice - negative_slice)
+    else:
+        closeness = torch.relu(negative_slice - anchor_slice)
+    penalty = float(closeness.mean().item()) * length
+    return base_score - penalty, term
 
 
 def _find_top_segments(residual: torch.Tensor, min_segment_length: int, top_k: int) -> list[tuple[int, int]]:

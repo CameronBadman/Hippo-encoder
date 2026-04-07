@@ -74,6 +74,7 @@ def evaluate_case(
     program = FormulaRegionProgram.from_teacher_spread(
         anchor=query_embed,
         positives=positive_embeds,
+        negatives=negative_embeds,
         base_radius=min_radius,
         radius_scale=radius_scale,
         max_terms_per_side=max_terms_per_side,
