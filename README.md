@@ -75,15 +75,15 @@ python scripts/benchmark_region_program_size.py \
 
 This compares a raw dense dump of all `minus/plus` dimension values against the sparse range-op format and reports rough token-count savings.
 
-Benchmark a pure formula-based region program:
+Benchmark a ranged formula-based region program:
 
 ```bash
 python scripts/benchmark_formula_region.py \
   --cases benchmarks/sample_region_cases.json \
-  --num-terms 8
+  --max-terms-per-side 12
 ```
 
-This fits a compact Gaussian-bump formula to the `minus/plus` arrays and reports membership quality plus rough token cost. Support intervals are converted to discrete dimension spans with `floor` for starts and `ceil` for ends.
+This fits a compact local-formula DSL to the `minus/plus` arrays with bounded terms such as constants, ramps, and Gaussian bumps over explicit dimension ranges. This is closer to "draw the shape you want" than the earlier global-only formula.
 
 ## Default Setup
 

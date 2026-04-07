@@ -39,13 +39,29 @@ class Encoder:
         return F.normalize(embeds, dim=-1)
 
 
+def term_lines(program: FormulaRegionProgram) -> list[str]:
+    lines = []
+    for term in program.minus_terms + program.plus_terms:
+        payload = f"{term.target} {term.term_type} {term.start} {term.end} amp={term.amplitude:.3f}"
+        if term.term_type == "ramp":
+            payload += f" start={term.start_value:.3f} end={term.end_value:.3f}"
+        if term.term_type == "gaussian":
+            payload += f" center={term.center_ratio:.3f} width={term.width_ratio:.3f}"
+        lines.append(payload)
+    return lines
+
+
+def approx_tokens(lines: list[str]) -> int:
+    return sum(max(1, (len(line) + 3) // 4) for line in lines)
+
+
 def evaluate_case(
     case: dict,
     encoder: Encoder,
     inside_threshold: float,
     radius_scale: float,
     min_radius: float,
-    num_terms: int,
+    max_terms_per_side: int,
 ) -> dict:
     query = case["query"]
     positives = case["positives"]
@@ -60,27 +76,19 @@ def evaluate_case(
         positives=positive_embeds,
         base_radius=min_radius,
         radius_scale=radius_scale,
-        num_terms=num_terms,
+        max_terms_per_side=max_terms_per_side,
     )
     region = program.hydrate(query_embed)
 
     positive_frac = inside_fraction(positive_embeds, region["lower"], region["upper"])
     negative_frac = inside_fraction(negative_embeds, region["lower"], region["upper"])
-
-    sparse_term_lines = [
-        f"minus gaussian amp={term.amplitude:.3f} center={term.center:.3f} width={term.width:.3f}"
-        for term in program.minus_terms
-    ] + [
-        f"plus gaussian amp={term.amplitude:.3f} center={term.center:.3f} width={term.width:.3f}"
-        for term in program.plus_terms
-    ]
-    token_estimate = sum(max(1, (len(line) + 3) // 4) for line in sparse_term_lines)
+    lines = term_lines(program)
 
     return {
         "query": query,
         "minus_term_count": len(program.minus_terms),
         "plus_term_count": len(program.plus_terms),
-        "formula_token_estimate": token_estimate,
+        "formula_token_estimate": approx_tokens(lines),
         "positive_hit_rate": (positive_frac >= inside_threshold).float().mean().item(),
         "negative_false_positive_rate": (negative_frac >= inside_threshold).float().mean().item(),
         "positive_inside_fraction_mean": positive_frac.mean().item(),
@@ -95,8 +103,7 @@ def evaluate_case(
             region["lower"],
             region["upper"],
         ).mean().item(),
-        "minus_supports": [term.support_interval(program.dimensions) for term in program.minus_terms],
-        "plus_supports": [term.support_interval(program.dimensions) for term in program.plus_terms],
+        "sample_terms": lines[:12],
     }
 
 
@@ -116,14 +123,14 @@ def summarize(results: list[dict]) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Benchmark formula-based region programs.")
+    parser = argparse.ArgumentParser(description="Benchmark ranged-formula region programs.")
     parser.add_argument("--cases", required=True)
     parser.add_argument("--teacher-model", default="intfloat/e5-base-v2")
     parser.add_argument("--max-length", type=int, default=64)
     parser.add_argument("--inside-threshold", type=float, default=0.75)
     parser.add_argument("--radius-scale", type=float, default=1.5)
     parser.add_argument("--min-radius", type=float, default=0.01)
-    parser.add_argument("--num-terms", type=int, default=8)
+    parser.add_argument("--max-terms-per-side", type=int, default=12)
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -139,7 +146,7 @@ def main() -> None:
             inside_threshold=args.inside_threshold,
             radius_scale=args.radius_scale,
             min_radius=args.min_radius,
-            num_terms=args.num_terms,
+            max_terms_per_side=args.max_terms_per_side,
         )
         for case in cases
     ]

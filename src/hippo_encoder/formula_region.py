@@ -7,20 +7,22 @@ import torch
 
 
 @dataclass
-class FormulaTerm:
+class RangedFormulaTerm:
     target: str
+    term_type: str
+    start: int
+    end: int
     amplitude: float
-    center: float
-    width: float
+    start_value: float | None = None
+    end_value: float | None = None
+    center_ratio: float | None = None
+    width_ratio: float | None = None
 
     def to_dict(self) -> dict:
-        payload = asdict(self)
-        return payload
+        return asdict(self)
 
-    def support_interval(self, dimensions: int) -> dict:
-        start = math.floor(max(0.0, self.center - self.width) * (dimensions - 1))
-        end = math.ceil(min(1.0, self.center + self.width) * (dimensions - 1))
-        return {"start": start, "end": end}
+    def support_interval(self) -> dict:
+        return {"start": self.start, "end": self.end}
 
 
 @dataclass
@@ -28,19 +30,18 @@ class FormulaRegionProgram:
     dimensions: int
     base_minus: float
     base_plus: float
-    minus_terms: list[FormulaTerm]
-    plus_terms: list[FormulaTerm]
+    minus_terms: list[RangedFormulaTerm]
+    plus_terms: list[RangedFormulaTerm]
 
     def hydrate(self, anchor: torch.Tensor) -> dict[str, torch.Tensor]:
         if anchor.dim() != 1 or anchor.shape[0] != self.dimensions:
             raise ValueError("Anchor must be a 1D tensor matching program dimensions.")
 
-        x = torch.linspace(0.0, 1.0, self.dimensions, device=anchor.device, dtype=anchor.dtype)
         minus = torch.full_like(anchor, self.base_minus)
         plus = torch.full_like(anchor, self.base_plus)
 
-        minus = minus + self._evaluate_terms(self.minus_terms, x)
-        plus = plus + self._evaluate_terms(self.plus_terms, x)
+        self._apply_terms(minus, self.minus_terms)
+        self._apply_terms(plus, self.plus_terms)
         minus = torch.clamp(minus, min=0.0)
         plus = torch.clamp(plus, min=0.0)
 
@@ -67,7 +68,7 @@ class FormulaRegionProgram:
         positives: torch.Tensor,
         base_radius: float = 0.01,
         radius_scale: float = 1.0,
-        num_terms: int = 8,
+        max_terms_per_side: int = 12,
     ) -> "FormulaRegionProgram":
         if anchor.dim() != 1:
             raise ValueError("Anchor must be a 1D tensor.")
@@ -78,8 +79,18 @@ class FormulaRegionProgram:
         minus = torch.clamp((-deltas).max(dim=0).values * radius_scale, min=base_radius)
         plus = torch.clamp(deltas.max(dim=0).values * radius_scale, min=base_radius)
 
-        minus_terms = fit_formula_terms(minus, base_radius=base_radius, num_terms=num_terms)
-        plus_terms = fit_formula_terms(plus, base_radius=base_radius, num_terms=num_terms)
+        minus_terms = fit_ranged_formula_terms(
+            target=minus,
+            base_radius=base_radius,
+            max_terms=max_terms_per_side,
+            target_name="minus",
+        )
+        plus_terms = fit_ranged_formula_terms(
+            target=plus,
+            base_radius=base_radius,
+            max_terms=max_terms_per_side,
+            target_name="plus",
+        )
         return cls(
             dimensions=anchor.shape[0],
             base_minus=base_radius,
@@ -89,21 +100,45 @@ class FormulaRegionProgram:
         )
 
     @staticmethod
-    def _evaluate_terms(terms: list[FormulaTerm], x: torch.Tensor) -> torch.Tensor:
-        values = torch.zeros_like(x)
+    def _apply_terms(target: torch.Tensor, terms: list[RangedFormulaTerm]) -> None:
         for term in terms:
-            width = max(term.width, 1e-4)
-            values = values + term.amplitude * torch.exp(-0.5 * ((x - term.center) / width) ** 2)
-        return values
+            start = max(0, min(target.shape[0] - 1, term.start))
+            end = max(start, min(target.shape[0] - 1, term.end))
+            span = end - start + 1
+            if span <= 0:
+                continue
+
+            if term.term_type == "const":
+                values = torch.full_like(target[start : end + 1], term.amplitude)
+            elif term.term_type == "ramp":
+                start_value = term.start_value if term.start_value is not None else 0.0
+                end_value = term.end_value if term.end_value is not None else term.amplitude
+                values = torch.linspace(
+                    start_value,
+                    end_value,
+                    steps=span,
+                    device=target.device,
+                    dtype=target.dtype,
+                )
+            elif term.term_type == "gaussian":
+                center_ratio = term.center_ratio if term.center_ratio is not None else 0.5
+                width_ratio = max(term.width_ratio if term.width_ratio is not None else 0.25, 1e-4)
+                local_x = torch.linspace(0.0, 1.0, steps=span, device=target.device, dtype=target.dtype)
+                values = term.amplitude * torch.exp(-0.5 * ((local_x - center_ratio) / width_ratio) ** 2)
+            else:
+                raise ValueError(f"Unsupported term type: {term.term_type}")
+
+            target[start : end + 1] += values
 
 
-def fit_formula_terms(
+def fit_ranged_formula_terms(
     target: torch.Tensor,
     base_radius: float,
-    num_terms: int,
-    num_centers: int = 24,
-    widths: tuple[float, ...] = (0.03, 0.06, 0.12, 0.24),
-) -> list[FormulaTerm]:
+    max_terms: int,
+    target_name: str,
+    min_segment_length: int = 8,
+    top_segments: int = 4,
+) -> list[RangedFormulaTerm]:
     if target.dim() != 1:
         raise ValueError("Target must be 1D.")
 
@@ -111,38 +146,106 @@ def fit_formula_terms(
     if residual.max().item() <= 1e-8:
         return []
 
-    x = torch.linspace(0.0, 1.0, target.shape[0], dtype=target.dtype, device=target.device)
-    centers = torch.linspace(0.0, 1.0, num_centers, dtype=target.dtype, device=target.device)
+    segments = _find_top_segments(residual, min_segment_length=min_segment_length, top_k=top_segments)
+    terms: list[RangedFormulaTerm] = []
 
-    basis_columns: list[torch.Tensor] = []
-    basis_specs: list[tuple[float, float]] = []
-    for width in widths:
-        for center in centers:
-            column = torch.exp(-0.5 * ((x - center) / width) ** 2)
-            basis_columns.append(column)
-            basis_specs.append((float(center.item()), float(width)))
-
-    basis = torch.stack(basis_columns, dim=1)
-    solution = torch.linalg.lstsq(basis, residual.unsqueeze(1)).solution.squeeze(1)
-    solution = torch.clamp(solution, min=0.0)
-
-    topk = min(num_terms, solution.shape[0])
-    values, indices = torch.topk(solution, k=topk)
-    terms: list[FormulaTerm] = []
-    for amplitude_tensor, index_tensor in zip(values, indices):
-        amplitude = float(amplitude_tensor.item())
-        if amplitude <= 1e-6:
+    for start, end in segments:
+        if len(terms) >= max_terms:
+            break
+        segment = residual[start : end + 1]
+        if segment.numel() == 0:
             continue
-        center, width = basis_specs[int(index_tensor.item())]
+
+        mean_value = float(segment.mean().item())
+        start_value = float(segment[0].item())
+        end_value = float(segment[-1].item())
+        peak_index = int(torch.argmax(segment).item())
+        peak_value = float(segment[peak_index].item())
+        center_ratio = peak_index / max(1, segment.numel() - 1)
+
+        weights = segment / segment.sum().clamp(min=1e-8)
+        positions = torch.linspace(0.0, 1.0, steps=segment.numel(), dtype=segment.dtype, device=segment.device)
+        mean_pos = float((weights * positions).sum().item())
+        variance = float((weights * (positions - mean_pos) ** 2).sum().item())
+        width_ratio = max(0.08, min(0.5, math.sqrt(max(variance, 1e-5)) * 1.5))
+
         terms.append(
-            FormulaTerm(
-                target="radius",
-                amplitude=amplitude,
-                center=center,
-                width=width,
+            RangedFormulaTerm(
+                target=target_name,
+                term_type="const",
+                start=start,
+                end=end,
+                amplitude=mean_value,
             )
         )
-    return terms
+        if len(terms) >= max_terms:
+            break
+
+        if abs(end_value - start_value) >= 0.01:
+            terms.append(
+                RangedFormulaTerm(
+                    target=target_name,
+                    term_type="ramp",
+                    start=start,
+                    end=end,
+                    amplitude=end_value,
+                    start_value=start_value,
+                    end_value=end_value,
+                )
+            )
+            if len(terms) >= max_terms:
+                break
+
+        if peak_value >= mean_value + 0.01:
+            terms.append(
+                RangedFormulaTerm(
+                    target=target_name,
+                    term_type="gaussian",
+                    start=start,
+                    end=end,
+                    amplitude=max(0.0, peak_value - mean_value),
+                    center_ratio=center_ratio,
+                    width_ratio=width_ratio,
+                )
+            )
+
+    return terms[:max_terms]
+
+
+def _find_top_segments(residual: torch.Tensor, min_segment_length: int, top_k: int) -> list[tuple[int, int]]:
+    smoothed = _smooth(residual, kernel_size=max(5, min_segment_length))
+    values, indices = torch.topk(smoothed, k=min(top_k, smoothed.shape[0]))
+
+    segments: list[tuple[int, int, float]] = []
+    half = max(1, min_segment_length // 2)
+    for value_tensor, index_tensor in zip(values, indices):
+        score = float(value_tensor.item())
+        center = int(index_tensor.item())
+        start = max(0, center - half)
+        end = min(residual.shape[0] - 1, center + half)
+        merged = False
+        for seg_index, (seg_start, seg_end, seg_score) in enumerate(segments):
+            if not (end < seg_start or start > seg_end):
+                segments[seg_index] = (
+                    min(seg_start, start),
+                    max(seg_end, end),
+                    max(seg_score, score),
+                )
+                merged = True
+                break
+        if not merged:
+            segments.append((start, end, score))
+
+    segments.sort(key=lambda item: item[2], reverse=True)
+    return [(start, end) for start, end, _ in segments[:top_k]]
+
+
+def _smooth(values: torch.Tensor, kernel_size: int) -> torch.Tensor:
+    kernel_size = max(1, kernel_size)
+    padding = kernel_size // 2
+    kernel = torch.ones(1, 1, kernel_size, dtype=values.dtype, device=values.device) / kernel_size
+    padded = torch.nn.functional.pad(values.view(1, 1, -1), (padding, padding), mode="replicate")
+    return torch.nn.functional.conv1d(padded, kernel).view(-1)[: values.shape[0]]
 
 
 def inside_fraction(embeds: torch.Tensor, lower: torch.Tensor, upper: torch.Tensor) -> torch.Tensor:
