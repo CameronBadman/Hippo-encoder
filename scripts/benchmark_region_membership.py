@@ -8,6 +8,8 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
 
+from hippo_encoder.region import SparseRegionProgram, inside_fraction, soft_box_distance
+
 
 def masked_mean(hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
     mask = attention_mask.unsqueeze(-1).float()
@@ -69,23 +71,6 @@ class StudentEncoder:
         return F.normalize(embeds, dim=-1)
 
 
-def compute_radius(
-    center: torch.Tensor,
-    positives: torch.Tensor,
-    radius_scale: float,
-    min_radius: float,
-) -> torch.Tensor:
-    deltas = (positives - center.unsqueeze(0)).abs()
-    radius = deltas.max(dim=0).values * radius_scale
-    return torch.clamp(radius, min=min_radius)
-
-
-def inside_fraction(embeds: torch.Tensor, center: torch.Tensor, radius: torch.Tensor) -> torch.Tensor:
-    deltas = (embeds - center.unsqueeze(0)).abs()
-    inside = deltas <= radius.unsqueeze(0)
-    return inside.float().mean(dim=-1)
-
-
 def evaluate_case(
     case: dict,
     teacher: TeacherEncoder,
@@ -103,17 +88,19 @@ def evaluate_case(
     teacher_positives = teacher.encode(positives)
     teacher_negatives = teacher.encode(negatives)
 
-    radius = compute_radius(
-        center=teacher_query,
+    program = SparseRegionProgram.from_teacher_spread(
+        anchor=teacher_query,
         positives=teacher_positives,
+        base_radius=min_radius,
         radius_scale=radius_scale,
-        min_radius=min_radius,
     )
+    teacher_region = program.hydrate(teacher_query)
+    student_region = program.hydrate(student_query)
 
-    teacher_pos_frac = inside_fraction(teacher_positives, teacher_query, radius)
-    teacher_neg_frac = inside_fraction(teacher_negatives, teacher_query, radius)
-    student_pos_frac = inside_fraction(teacher_positives, student_query, radius)
-    student_neg_frac = inside_fraction(teacher_negatives, student_query, radius)
+    teacher_pos_frac = inside_fraction(teacher_positives, teacher_region["lower"], teacher_region["upper"])
+    teacher_neg_frac = inside_fraction(teacher_negatives, teacher_region["lower"], teacher_region["upper"])
+    student_pos_frac = inside_fraction(teacher_positives, student_region["lower"], student_region["upper"])
+    student_neg_frac = inside_fraction(teacher_negatives, student_region["lower"], student_region["upper"])
 
     student_teacher_cos = F.cosine_similarity(
         student_query.unsqueeze(0),
@@ -123,6 +110,8 @@ def evaluate_case(
 
     return {
         "query": query,
+        "minus_op_count": len(program.minus_ops),
+        "plus_op_count": len(program.plus_ops),
         "student_teacher_cosine": student_teacher_cos,
         "teacher_positive_hit_rate": (teacher_pos_frac >= inside_threshold).float().mean().item(),
         "teacher_negative_false_positive_rate": (teacher_neg_frac >= inside_threshold).float().mean().item(),
@@ -132,11 +121,33 @@ def evaluate_case(
         "teacher_negative_inside_fraction_mean": teacher_neg_frac.mean().item(),
         "student_positive_inside_fraction_mean": student_pos_frac.mean().item(),
         "student_negative_inside_fraction_mean": student_neg_frac.mean().item(),
+        "teacher_positive_soft_distance_mean": soft_box_distance(
+            teacher_positives,
+            teacher_region["lower"],
+            teacher_region["upper"],
+        ).mean().item(),
+        "teacher_negative_soft_distance_mean": soft_box_distance(
+            teacher_negatives,
+            teacher_region["lower"],
+            teacher_region["upper"],
+        ).mean().item(),
+        "student_positive_soft_distance_mean": soft_box_distance(
+            teacher_positives,
+            student_region["lower"],
+            student_region["upper"],
+        ).mean().item(),
+        "student_negative_soft_distance_mean": soft_box_distance(
+            teacher_negatives,
+            student_region["lower"],
+            student_region["upper"],
+        ).mean().item(),
     }
 
 
 def summarize(results: list[dict]) -> dict:
     keys = [
+        "minus_op_count",
+        "plus_op_count",
         "student_teacher_cosine",
         "teacher_positive_hit_rate",
         "teacher_negative_false_positive_rate",
@@ -146,6 +157,10 @@ def summarize(results: list[dict]) -> dict:
         "teacher_negative_inside_fraction_mean",
         "student_positive_inside_fraction_mean",
         "student_negative_inside_fraction_mean",
+        "teacher_positive_soft_distance_mean",
+        "teacher_negative_soft_distance_mean",
+        "student_positive_soft_distance_mean",
+        "student_negative_soft_distance_mean",
     ]
     return {
         key: sum(result[key] for result in results) / len(results)

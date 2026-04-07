@@ -59,6 +59,13 @@ python scripts/benchmark_region_membership.py \
 
 This benchmark does not test top-k ranking. It tests whether a query-derived hypercube-style region includes the positives and excludes the negatives in each case.
 
+The region representation itself now uses two sparse arrays:
+
+- `minus`: per-dimension lower slack relative to the anchor embedding
+- `plus`: per-dimension upper slack relative to the anchor embedding
+
+These are stored as sparse range operations and hydrated into full 768-dimensional bounds at query time.
+
 ## Default Setup
 
 - Teacher: `intfloat/e5-base-v2`
@@ -71,6 +78,7 @@ This benchmark does not test top-k ranking. It tests whether a query-derived hyp
 - `benchmarks/sample_region_cases.json`: sample IN/OUT benchmark cases
 - `scripts/benchmark_region_membership.py`: region-membership benchmark for query/positive/negative cases
 - `scripts/prepare_text_dataset.py`: download and export public text data to JSONL
+- `src/hippo_encoder/region.py`: sparse two-array region program, hydration, and scoring
 - `src/hippo_encoder/data.py`: local text-only dataset loader
 - `src/hippo_encoder/teacher.py`: frozen text teacher wrapper
 - `src/hippo_encoder/student.py`: small language model encoder with projection heads
