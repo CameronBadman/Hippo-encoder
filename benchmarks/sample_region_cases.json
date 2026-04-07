@@ -1,0 +1,50 @@
+[
+  {
+    "query": "query: red chair near the window",
+    "positives": [
+      "query: a scarlet chair beside the window",
+      "query: the red seat next to the window"
+    ],
+    "negatives": [
+      "query: stock market falls after weak earnings",
+      "query: a small dog sprinting across a field",
+      "query: coffee cup sitting on the office desk"
+    ]
+  },
+  {
+    "query": "query: blue mug on the desk",
+    "positives": [
+      "query: coffee cup sitting on the office desk",
+      "query: a blue cup resting on the table"
+    ],
+    "negatives": [
+      "query: basketball team wins championship game",
+      "query: person standing beside a parked bicycle",
+      "query: dog running through the grass"
+    ]
+  },
+  {
+    "query": "query: dog running through the grass",
+    "positives": [
+      "query: a small dog sprinting across a field",
+      "query: a dog running across the lawn"
+    ],
+    "negatives": [
+      "query: company shares drop after poor results",
+      "query: red chair near the window",
+      "query: blue mug on the desk"
+    ]
+  },
+  {
+    "query": "query: stock market falls after weak earnings",
+    "positives": [
+      "query: company shares drop after poor results",
+      "query: markets decline after disappointing earnings reports"
+    ],
+    "negatives": [
+      "query: basketball team wins championship game",
+      "query: dog running through the grass",
+      "query: person standing beside a parked bicycle"
+    ]
+  }
+]

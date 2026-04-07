@@ -49,6 +49,16 @@ python scripts/prepare_text_dataset.py \
 
 For Google Colab, use [Hippo_Encoder_Colab.ipynb](/home/cameron/projects/Hippo-encoder/Hippo_Encoder_Colab.ipynb).
 
+Benchmark region-style IN membership:
+
+```bash
+python scripts/benchmark_region_membership.py \
+  --cases benchmarks/sample_region_cases.json \
+  --student-checkpoint /path/to/checkpoint/epoch-2
+```
+
+This benchmark does not test top-k ranking. It tests whether a query-derived hypercube-style region includes the positives and excludes the negatives in each case.
+
 ## Default Setup
 
 - Teacher: `intfloat/e5-base-v2`
@@ -58,6 +68,8 @@ For Google Colab, use [Hippo_Encoder_Colab.ipynb](/home/cameron/projects/Hippo-e
 ## Repo Layout
 
 - `configs/distill_clip_tiny.json`: example config
+- `benchmarks/sample_region_cases.json`: sample IN/OUT benchmark cases
+- `scripts/benchmark_region_membership.py`: region-membership benchmark for query/positive/negative cases
 - `scripts/prepare_text_dataset.py`: download and export public text data to JSONL
 - `src/hippo_encoder/data.py`: local text-only dataset loader
 - `src/hippo_encoder/teacher.py`: frozen text teacher wrapper
