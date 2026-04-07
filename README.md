@@ -62,7 +62,7 @@ This benchmark does not test top-k ranking. It tests whether a query-derived hyp
 ## Default Setup
 
 - Teacher: `intfloat/e5-base-v2`
-- Student: `distilgpt2`
+- Student: `BAAI/bge-small-en-v1.5`
 - Losses: cosine matching to teacher text embeddings plus a contrastive term
 
 ## Repo Layout
@@ -81,7 +81,7 @@ This benchmark does not test top-k ranking. It tests whether a query-derived hyp
 
 Useful upgrades from here:
 
-- swap `distilgpt2` for a stronger sub-1B student
+- compare `BAAI/bge-small-en-v1.5` against other small students
 - add richer teacher targets from intermediate layers instead of only pooled outputs
 - add a second positional scheme if you want to experiment with dual-RoPE token structure
 - add evaluation for retrieval recall and nearest-neighbor alignment
