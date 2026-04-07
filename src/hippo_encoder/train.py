@@ -11,10 +11,10 @@ from torch.utils.data import DataLoader
 from transformers import get_linear_schedule_with_warmup
 
 from hippo_encoder.config import DistillConfig
-from hippo_encoder.data import ImageTextJsonlDataset
-from hippo_encoder.losses import clip_distillation_loss
+from hippo_encoder.data import TextJsonlDataset
+from hippo_encoder.losses import text_distillation_loss
 from hippo_encoder.student import TinyEncoderStudent
-from hippo_encoder.teacher import ClipTeacher
+from hippo_encoder.teacher import TextTeacher
 
 
 def seed_everything(seed: int) -> None:
@@ -25,9 +25,7 @@ def seed_everything(seed: int) -> None:
 
 def collate_fn(rows: list[dict]) -> dict:
     return {
-        "images": [row["image"] for row in rows],
         "texts": [row["text"] for row in rows],
-        "image_paths": [row["image_path"] for row in rows],
     }
 
 
@@ -37,7 +35,7 @@ def train(config: DistillConfig) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dataset = ImageTextJsonlDataset(config.dataset_jsonl, config.image_root)
+    dataset = TextJsonlDataset(config.dataset_jsonl)
     loader = DataLoader(
         dataset,
         batch_size=config.batch_size,
@@ -46,7 +44,7 @@ def train(config: DistillConfig) -> None:
         collate_fn=collate_fn,
     )
 
-    teacher = ClipTeacher(config.teacher_model_name).to(device)
+    teacher = TextTeacher(config.teacher_model_name).to(device)
     student = TinyEncoderStudent(
         model_name=config.student_model_name,
         target_dim=teacher.embedding_dim,
@@ -70,9 +68,9 @@ def train(config: DistillConfig) -> None:
         student.train()
         for batch in loader:
             teacher_outputs = teacher.encode(
-                images=batch["images"],
                 texts=batch["texts"],
                 device=device,
+                max_length=config.max_text_length,
                 normalize=config.normalize_targets,
             )
             student_outputs = student(
@@ -80,10 +78,9 @@ def train(config: DistillConfig) -> None:
                 device=device,
                 max_length=config.max_text_length,
             )
-            loss, metrics = clip_distillation_loss(
+            loss, metrics = text_distillation_loss(
                 student_outputs=student_outputs,
                 teacher_outputs=teacher_outputs,
-                teacher_image_weight=config.teacher_image_weight,
                 teacher_text_weight=config.teacher_text_weight,
                 hidden_state_weight=config.hidden_state_weight,
                 contrastive_weight=config.contrastive_weight,
@@ -100,7 +97,6 @@ def train(config: DistillConfig) -> None:
                 print(
                     f"epoch={epoch} step={global_step} "
                     f"loss={metrics['loss']:.4f} "
-                    f"image={metrics['image_loss']:.4f} "
                     f"text={metrics['text_loss']:.4f} "
                     f"hidden={metrics['hidden_loss']:.4f} "
                     f"contrastive={metrics['contrastive_loss']:.4f}"
@@ -127,7 +123,7 @@ def save_checkpoint(path: Path, student: TinyEncoderStudent, config: DistillConf
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Distill a CLIP-style teacher into a tiny text model.")
+    parser = argparse.ArgumentParser(description="Distill a text embedding teacher into a tiny text model.")
     parser.add_argument("--config", required=True, help="Path to a JSON config file.")
     args = parser.parse_args()
     train(DistillConfig.from_json(args.config))

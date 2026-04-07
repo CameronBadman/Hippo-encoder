@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hippo-encoder"
 version = "0.1.0"
-description = "Framework for distilling CLIP-style encoders into compact language models."
+description = "Framework for distilling text embedding teachers into compact language models."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

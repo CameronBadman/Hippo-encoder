@@ -10,10 +10,8 @@ class DistillConfig:
     teacher_model_name: str
     student_model_name: str
     dataset_jsonl: str
-    image_root: str
     output_dir: str
     max_text_length: int = 64
-    image_size: int = 224
     batch_size: int = 8
     num_epochs: int = 1
     learning_rate: float = 1e-4
@@ -21,7 +19,6 @@ class DistillConfig:
     log_every: int = 10
     save_every: int = 500
     num_workers: int = 2
-    teacher_image_weight: float = 1.0
     teacher_text_weight: float = 1.0
     hidden_state_weight: float = 0.2
     contrastive_weight: float = 0.2

@@ -1,27 +1,25 @@
 # Hippo-encoder
 
-Minimal framework for distilling an open-source CLIP teacher into a small language model that learns the teacher's embedding space.
+Minimal framework for distilling a text embedding teacher into a small language model that learns the teacher's semantic space.
 
 ## What This Does
 
-The current training stack freezes a CLIP teacher and trains a small text model to predict:
+The current training stack freezes a text encoder teacher and trains a small text model to predict:
 
-- the teacher image embedding for a paired caption
-- the teacher text embedding for that same caption
-- the teacher text hidden state summary
+- the teacher text embedding for the input text
+- the teacher hidden-state summary
 
-This is a practical first step toward a tiny model that "understands" the encoder geometry instead of trying to reason over raw encoder weights directly.
+This is the simplest path toward a tiny model that starts to internalize another encoder's representation geometry without bringing in image data yet.
 
 ## Dataset Format
 
 Provide a local JSONL file where each row looks like:
 
 ```json
-{"image":"example.jpg","text":"a red chair near the window"}
+{"text":"a red chair near the window"}
 ```
 
-- `image` is relative to `image_root`
-- `text` is the caption or query text
+- `text` is the caption, query, or short passage you want to encode
 
 ## Quick Start
 
@@ -41,15 +39,15 @@ For Google Colab, use [Hippo_Encoder_Colab.ipynb](/home/cameron/projects/Hippo-e
 
 ## Default Setup
 
-- Teacher: `openai/clip-vit-base-patch32`
+- Teacher: `intfloat/e5-base-v2`
 - Student: `distilgpt2`
-- Losses: cosine matching to teacher image/text embeddings plus a contrastive term
+- Losses: cosine matching to teacher text embeddings plus a contrastive term
 
 ## Repo Layout
 
 - `configs/distill_clip_tiny.json`: example config
-- `src/hippo_encoder/data.py`: local image-text dataset loader
-- `src/hippo_encoder/teacher.py`: frozen CLIP teacher wrapper
+- `src/hippo_encoder/data.py`: local text-only dataset loader
+- `src/hippo_encoder/teacher.py`: frozen text teacher wrapper
 - `src/hippo_encoder/student.py`: small language model encoder with projection heads
 - `src/hippo_encoder/losses.py`: distillation objectives
 - `src/hippo_encoder/train.py`: training entrypoint
@@ -59,6 +57,6 @@ For Google Colab, use [Hippo_Encoder_Colab.ipynb](/home/cameron/projects/Hippo-e
 Useful upgrades from here:
 
 - swap `distilgpt2` for a stronger sub-1B student
-- add region or patch-level targets instead of only pooled teacher outputs
+- add richer teacher targets from intermediate layers instead of only pooled outputs
 - add a second positional scheme if you want to experiment with dual-RoPE token structure
 - add evaluation for retrieval recall and nearest-neighbor alignment
