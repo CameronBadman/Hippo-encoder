@@ -11,7 +11,7 @@ class RangeOp:
     start: int
     end: int
     value: float
-    mode: str = "set"
+    mode: str = "add"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -78,6 +78,7 @@ class SparseRegionProgram:
             target="minus",
             quantize_step=quantize_step,
             change_threshold=change_threshold,
+            mode="add",
         )
         plus_ops = _compress_dense_array(
             dense=plus,
@@ -85,6 +86,7 @@ class SparseRegionProgram:
             target="plus",
             quantize_step=quantize_step,
             change_threshold=change_threshold,
+            mode="add",
         )
         return cls(
             dimensions=anchor.shape[0],
@@ -115,20 +117,30 @@ def _compress_dense_array(
     target: str,
     quantize_step: float,
     change_threshold: float,
+    mode: str,
 ) -> list[RangeOp]:
     if dense.dim() != 1:
         raise ValueError("Dense array must be 1D.")
 
-    quantized = torch.round(dense / quantize_step) * quantize_step
+    deltas = dense - base_value
+    quantized = torch.round(deltas / quantize_step) * quantize_step
     ops: list[RangeOp] = []
     run_start = None
     run_value = None
 
     for index, value_tensor in enumerate(quantized):
         value = float(value_tensor.item())
-        if abs(value - base_value) < change_threshold:
+        if abs(value) < change_threshold:
             if run_start is not None:
-                ops.append(RangeOp(target=target, start=run_start, end=index - 1, value=run_value))
+                ops.append(
+                    RangeOp(
+                        target=target,
+                        start=run_start,
+                        end=index - 1,
+                        value=run_value,
+                        mode=mode,
+                    )
+                )
                 run_start = None
                 run_value = None
             continue
@@ -139,12 +151,28 @@ def _compress_dense_array(
             continue
 
         if abs(value - run_value) >= change_threshold:
-            ops.append(RangeOp(target=target, start=run_start, end=index - 1, value=run_value))
+            ops.append(
+                RangeOp(
+                    target=target,
+                    start=run_start,
+                    end=index - 1,
+                    value=run_value,
+                    mode=mode,
+                )
+            )
             run_start = index
             run_value = value
 
     if run_start is not None:
-        ops.append(RangeOp(target=target, start=run_start, end=dense.shape[0] - 1, value=run_value))
+        ops.append(
+            RangeOp(
+                target=target,
+                start=run_start,
+                end=dense.shape[0] - 1,
+                value=run_value,
+                mode=mode,
+            )
+        )
 
     return ops
 
