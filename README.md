@@ -66,6 +66,15 @@ The region representation itself now uses two sparse arrays:
 
 These are stored as sparse range operations and hydrated into full 768-dimensional bounds at query time.
 
+Estimate how verbose the region program would be to generate:
+
+```bash
+python scripts/benchmark_region_program_size.py \
+  --cases benchmarks/sample_region_cases.json
+```
+
+This compares a raw dense dump of all `minus/plus` dimension values against the sparse range-op format and reports rough token-count savings.
+
 ## Default Setup
 
 - Teacher: `intfloat/e5-base-v2`
@@ -77,6 +86,7 @@ These are stored as sparse range operations and hydrated into full 768-dimension
 - `configs/distill_clip_tiny.json`: example config
 - `benchmarks/sample_region_cases.json`: sample IN/OUT benchmark cases
 - `scripts/benchmark_region_membership.py`: region-membership benchmark for query/positive/negative cases
+- `scripts/benchmark_region_program_size.py`: dense-vs-sparse program size benchmark
 - `scripts/prepare_text_dataset.py`: download and export public text data to JSONL
 - `src/hippo_encoder/region.py`: sparse two-array region program, hydration, and scoring
 - `src/hippo_encoder/data.py`: local text-only dataset loader
