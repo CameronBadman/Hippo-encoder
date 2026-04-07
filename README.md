@@ -75,6 +75,16 @@ python scripts/benchmark_region_program_size.py \
 
 This compares a raw dense dump of all `minus/plus` dimension values against the sparse range-op format and reports rough token-count savings.
 
+Benchmark a pure formula-based region program:
+
+```bash
+python scripts/benchmark_formula_region.py \
+  --cases benchmarks/sample_region_cases.json \
+  --num-terms 8
+```
+
+This fits a compact Gaussian-bump formula to the `minus/plus` arrays and reports membership quality plus rough token cost. Support intervals are converted to discrete dimension spans with `floor` for starts and `ceil` for ends.
+
 ## Default Setup
 
 - Teacher: `intfloat/e5-base-v2`
@@ -86,8 +96,10 @@ This compares a raw dense dump of all `minus/plus` dimension values against the 
 - `configs/distill_clip_tiny.json`: example config
 - `benchmarks/sample_region_cases.json`: sample IN/OUT benchmark cases
 - `scripts/benchmark_region_membership.py`: region-membership benchmark for query/positive/negative cases
+- `scripts/benchmark_formula_region.py`: formula-based region benchmark
 - `scripts/benchmark_region_program_size.py`: dense-vs-sparse program size benchmark
 - `scripts/prepare_text_dataset.py`: download and export public text data to JSONL
+- `src/hippo_encoder/formula_region.py`: compact formula-based plus/minus region program
 - `src/hippo_encoder/region.py`: sparse two-array region program, hydration, and scoring
 - `src/hippo_encoder/data.py`: local text-only dataset loader
 - `src/hippo_encoder/teacher.py`: frozen text teacher wrapper
