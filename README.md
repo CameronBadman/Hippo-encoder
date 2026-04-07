@@ -35,6 +35,18 @@ Run training:
 python -m hippo_encoder.train --config configs/distill_clip_tiny.json
 ```
 
+Bootstrap a few thousand public text rows from Hugging Face:
+
+```bash
+python scripts/prepare_text_dataset.py \
+  --dataset ag_news \
+  --split train \
+  --text-column text \
+  --limit 5000 \
+  --prefix "passage: " \
+  --output data/train.jsonl
+```
+
 For Google Colab, use [Hippo_Encoder_Colab.ipynb](/home/cameron/projects/Hippo-encoder/Hippo_Encoder_Colab.ipynb).
 
 ## Default Setup
@@ -46,6 +58,7 @@ For Google Colab, use [Hippo_Encoder_Colab.ipynb](/home/cameron/projects/Hippo-e
 ## Repo Layout
 
 - `configs/distill_clip_tiny.json`: example config
+- `scripts/prepare_text_dataset.py`: download and export public text data to JSONL
 - `src/hippo_encoder/data.py`: local text-only dataset loader
 - `src/hippo_encoder/teacher.py`: frozen text teacher wrapper
 - `src/hippo_encoder/student.py`: small language model encoder with projection heads
