@@ -75,6 +75,17 @@ python scripts/benchmark_region_program_size.py \
 
 This compares a raw dense dump of all `minus/plus` dimension values against the sparse range-op format and reports rough token-count savings.
 
+Benchmark a grouped anchor-preserving region program:
+
+```bash
+python scripts/benchmark_group_region.py \
+  --cases benchmarks/sample_region_cases.json \
+  --student-checkpoint /path/to/checkpoint/epoch-2 \
+  --group-size 16
+```
+
+This keeps the encoder vector as the anchor and replaces raw per-dimension bounds with grouped `minus/plus` arrays over fixed blocks of dimensions.
+
 Benchmark a ranged formula-based region program:
 
 ```bash
@@ -97,9 +108,11 @@ This fits a compact local-formula DSL to the `minus/plus` arrays with bounded te
 - `benchmarks/sample_region_cases.json`: sample IN/OUT benchmark cases
 - `scripts/benchmark_region_membership.py`: region-membership benchmark for query/positive/negative cases
 - `scripts/benchmark_formula_region.py`: formula-based region benchmark
+- `scripts/benchmark_group_region.py`: grouped anchor-preserving region benchmark
 - `scripts/benchmark_region_program_size.py`: dense-vs-sparse program size benchmark
 - `scripts/prepare_text_dataset.py`: download and export public text data to JSONL
 - `src/hippo_encoder/formula_region.py`: compact formula-based plus/minus region program
+- `src/hippo_encoder/group_region.py`: grouped two-array region program
 - `src/hippo_encoder/region.py`: sparse two-array region program, hydration, and scoring
 - `src/hippo_encoder/data.py`: local text-only dataset loader
 - `src/hippo_encoder/teacher.py`: frozen text teacher wrapper
