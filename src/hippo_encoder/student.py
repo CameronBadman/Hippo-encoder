@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import torch
@@ -176,6 +177,8 @@ class FormulaRegionHead(nn.Module):
 
 
 class DenseDeltaHead(nn.Module):
+    softplus_zero = math.log(2.0)
+
     def __init__(self, hidden_size: int, target_dim: int):
         super().__init__()
         inner = max(256, min(hidden_size * 2, 1024))
@@ -205,8 +208,9 @@ class DenseDeltaHead(nn.Module):
     ) -> dict[str, torch.Tensor]:
         if anchor.dim() == 1:
             anchor = anchor.unsqueeze(0)
-        minus = torch.clamp(F.softplus(outputs["minus_raw"]) + base_minus, min=0.0)
-        plus = torch.clamp(F.softplus(outputs["plus_raw"]) + base_plus, min=0.0)
+        # Make zero logits correspond to the base radius instead of a very wide default box.
+        minus = torch.clamp(F.softplus(outputs["minus_raw"]) - self.softplus_zero + base_minus, min=0.0)
+        plus = torch.clamp(F.softplus(outputs["plus_raw"]) - self.softplus_zero + base_plus, min=0.0)
         return {
             "minus": minus,
             "plus": plus,
