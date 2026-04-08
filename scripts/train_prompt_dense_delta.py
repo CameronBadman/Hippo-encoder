@@ -54,6 +54,10 @@ def build_prompted_inputs(batch: list[dict], instruction: str) -> list[str]:
     return [f"instruction: {instruction}\nquery: {row['query']}" for row in batch]
 
 
+def build_query_inputs(batch: list[dict]) -> list[str]:
+    return [row["query"] for row in batch]
+
+
 def encode_case_batch(
     teacher: TextTeacher,
     batch: list[dict],
@@ -162,11 +166,13 @@ def main() -> None:
                 device=device,
                 max_length=args.max_length,
             )
+            query_inputs = build_query_inputs(batch)
             prompted_inputs = build_prompted_inputs(batch, args.instruction)
-            student_outputs = student(texts=prompted_inputs, device=device, max_length=args.max_length)
-            anchor = student_outputs["projected_embeds"]
+            query_outputs = student(texts=query_inputs, device=device, max_length=args.max_length)
+            prompted_outputs = student(texts=prompted_inputs, device=device, max_length=args.max_length)
+            anchor = query_outputs["projected_embeds"]
             region = student.dense_delta_head.hydrate_region(
-                student_outputs["dense_delta_outputs"],
+                prompted_outputs["dense_delta_outputs"],
                 anchor=anchor,
                 base_minus=args.base_radius,
                 base_plus=args.base_radius,

@@ -77,10 +77,11 @@ def evaluate_case(
     negatives = case["negatives"]
 
     prompted_query = build_prompted_query(instruction, query)
-    student_outputs = student(texts=[prompted_query], device=device, max_length=max_length)
-    anchor = student_outputs["projected_embeds"][0]
+    query_outputs = student(texts=[query], device=device, max_length=max_length)
+    prompted_outputs = student(texts=[prompted_query], device=device, max_length=max_length)
+    anchor = query_outputs["projected_embeds"][0]
     region = student.dense_delta_head.hydrate_region(
-        student_outputs["dense_delta_outputs"],
+        prompted_outputs["dense_delta_outputs"],
         anchor=anchor,
         base_minus=base_radius,
         base_plus=base_radius,
