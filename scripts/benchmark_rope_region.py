@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
 
 from hippo_encoder.rope_region import DualRopePointProgram, inside_fraction, soft_box_distance
+from hippo_encoder.student import TinyEncoderStudent
 
 
 def masked_mean(hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
@@ -44,35 +45,13 @@ class StudentEncoder:
     def __init__(self, checkpoint_dir: str | Path, device: torch.device, max_length: int):
         self.device = device
         self.max_length = max_length
-        checkpoint_dir = Path(checkpoint_dir).resolve()
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            str((checkpoint_dir / "tokenizer").resolve()),
-            local_files_only=True,
-        )
-        self.backbone = AutoModel.from_pretrained(
-            str((checkpoint_dir / "backbone").resolve()),
-            local_files_only=True,
-        ).to(device).eval()
-        heads = torch.load(checkpoint_dir / "heads.pt", map_location=device)
-        target_dim = heads["embed_head"]["weight"].shape[0]
-        self.embed_head = torch.nn.Linear(self.backbone.config.hidden_size, target_dim).to(device)
-        self.embed_head.load_state_dict(heads["embed_head"])
-        self.embed_head.eval()
+        self.student = TinyEncoderStudent.load_checkpoint(checkpoint_dir, device=device)
+        self.student.eval()
 
     @torch.no_grad()
     def encode(self, texts: list[str]) -> torch.Tensor:
-        batch = self.tokenizer(
-            texts,
-            padding=True,
-            truncation=True,
-            max_length=self.max_length,
-            return_tensors="pt",
-        )
-        batch = {name: tensor.to(self.device) for name, tensor in batch.items()}
-        outputs = self.backbone(**batch, return_dict=True)
-        pooled = masked_mean(outputs.last_hidden_state, batch["attention_mask"])
-        embeds = self.embed_head(pooled)
-        return F.normalize(embeds, dim=-1)
+        outputs = self.student(texts=texts, device=self.device, max_length=self.max_length)
+        return outputs["projected_embeds"]
 
 
 def evaluate_case(
