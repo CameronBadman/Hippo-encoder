@@ -22,6 +22,19 @@ class RopeBoxOp:
 
 
 @dataclass
+class RopePointOp:
+    target: str
+    rope: int
+    x: int
+    y: int
+    value: float
+    mode: str = "add"
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class DualRopeRegionProgram:
     dimensions: int
     base_minus: float
@@ -123,6 +136,105 @@ class DualRopeRegionProgram:
                 raise ValueError(f"Unsupported op mode: {op.mode}")
 
 
+@dataclass
+class DualRopePointProgram:
+    dimensions: int
+    base_minus: float
+    base_plus: float
+    minus_ops: list[RopePointOp]
+    plus_ops: list[RopePointOp]
+
+    def hydrate(self, anchor: torch.Tensor) -> dict[str, torch.Tensor]:
+        if anchor.dim() != 1 or anchor.shape[0] != self.dimensions:
+            raise ValueError("Anchor must be a 1D tensor matching program dimensions.")
+
+        minus = torch.full_like(anchor, self.base_minus)
+        plus = torch.full_like(anchor, self.base_plus)
+        rope_ids, xs, ys = _layout_tensors(self.dimensions, device=anchor.device)
+
+        self._apply_ops(minus, self.minus_ops, rope_ids=rope_ids, xs=xs, ys=ys)
+        self._apply_ops(plus, self.plus_ops, rope_ids=rope_ids, xs=xs, ys=ys)
+
+        return {
+            "minus": minus,
+            "plus": plus,
+            "lower": anchor - minus,
+            "upper": anchor + plus,
+        }
+
+    def to_dict(self) -> dict:
+        return {
+            "dimensions": self.dimensions,
+            "base_minus": self.base_minus,
+            "base_plus": self.base_plus,
+            "minus_ops": [op.to_dict() for op in self.minus_ops],
+            "plus_ops": [op.to_dict() for op in self.plus_ops],
+        }
+
+    @classmethod
+    def from_teacher_spread(
+        cls,
+        anchor: torch.Tensor,
+        positives: torch.Tensor,
+        terms_per_side: int,
+        base_radius: float = 0.01,
+        radius_scale: float = 1.0,
+        quantize_step: float = 0.01,
+        change_threshold: float = 0.005,
+    ) -> "DualRopePointProgram":
+        if anchor.dim() != 1:
+            raise ValueError("Anchor must be a 1D tensor.")
+        if positives.dim() != 2 or positives.shape[1] != anchor.shape[0]:
+            raise ValueError("Positives must have shape [N, D] with same D as anchor.")
+
+        deltas = positives - anchor.unsqueeze(0)
+        minus = torch.clamp((-deltas).max(dim=0).values * radius_scale, min=base_radius)
+        plus = torch.clamp(deltas.max(dim=0).values * radius_scale, min=base_radius)
+
+        minus_ops = _compress_rope_points(
+            dense=minus,
+            base_value=base_radius,
+            target="minus",
+            terms=terms_per_side,
+            quantize_step=quantize_step,
+            change_threshold=change_threshold,
+            mode="add",
+        )
+        plus_ops = _compress_rope_points(
+            dense=plus,
+            base_value=base_radius,
+            target="plus",
+            terms=terms_per_side,
+            quantize_step=quantize_step,
+            change_threshold=change_threshold,
+            mode="add",
+        )
+        return cls(
+            dimensions=anchor.shape[0],
+            base_minus=base_radius,
+            base_plus=base_radius,
+            minus_ops=minus_ops,
+            plus_ops=plus_ops,
+        )
+
+    @staticmethod
+    def _apply_ops(
+        target: torch.Tensor,
+        ops: list[RopePointOp],
+        rope_ids: torch.Tensor,
+        xs: torch.Tensor,
+        ys: torch.Tensor,
+    ) -> None:
+        for op in ops:
+            mask = (rope_ids == op.rope) & (xs == op.x) & (ys == op.y)
+            if op.mode == "set":
+                target[mask] = op.value
+            elif op.mode == "add":
+                target[mask] += op.value
+            else:
+                raise ValueError(f"Unsupported op mode: {op.mode}")
+
+
 def _rope_count(dimensions: int, rope: int) -> int:
     return (dimensions + (1 if rope == 0 else 0)) // 2
 
@@ -175,6 +287,48 @@ def _compress_rope_dense(
                 target=target,
                 rope=rope,
                 change_threshold=change_threshold,
+                mode=mode,
+            )
+        )
+    return ops
+
+
+def _compress_rope_points(
+    dense: torch.Tensor,
+    base_value: float,
+    target: str,
+    terms: int,
+    quantize_step: float,
+    change_threshold: float,
+    mode: str,
+) -> list[RopePointOp]:
+    if dense.dim() != 1:
+        raise ValueError("Dense array must be 1D.")
+    if terms <= 0:
+        return []
+
+    device = dense.device
+    rope_ids, xs, ys = _layout_tensors(dense.shape[0], device=device)
+    delta = dense - base_value
+    quantized = torch.round(delta / quantize_step) * quantize_step
+    active = torch.nonzero(torch.abs(quantized) >= change_threshold, as_tuple=False).flatten()
+    if active.numel() == 0:
+        return []
+
+    values = torch.abs(quantized[active])
+    topk = min(terms, active.numel())
+    _, order = torch.topk(values, k=topk, largest=True)
+    selected = active[order].tolist()
+
+    ops: list[RopePointOp] = []
+    for index in selected:
+        ops.append(
+            RopePointOp(
+                target=target,
+                rope=int(rope_ids[index].item()),
+                x=int(xs[index].item()),
+                y=int(ys[index].item()),
+                value=float(quantized[index].item()),
                 mode=mode,
             )
         )

@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
 
-from hippo_encoder.rope_region import DualRopeRegionProgram, inside_fraction, soft_box_distance
+from hippo_encoder.rope_region import DualRopePointProgram, inside_fraction, soft_box_distance
 
 
 def masked_mean(hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
@@ -76,6 +76,7 @@ def evaluate_case(
     inside_threshold: float,
     radius_scale: float,
     min_radius: float,
+    terms_per_side: int,
 ) -> dict:
     query = case["query"]
     positives = case["positives"]
@@ -86,9 +87,10 @@ def evaluate_case(
     teacher_positives = teacher.encode(positives)
     teacher_negatives = teacher.encode(negatives)
 
-    program = DualRopeRegionProgram.from_teacher_spread(
+    program = DualRopePointProgram.from_teacher_spread(
         anchor=teacher_query,
         positives=teacher_positives,
+        terms_per_side=terms_per_side,
         base_radius=min_radius,
         radius_scale=radius_scale,
     )
@@ -102,8 +104,8 @@ def evaluate_case(
 
     return {
         "query": query,
-        "minus_box_count": len(program.minus_ops),
-        "plus_box_count": len(program.plus_ops),
+        "minus_point_count": len(program.minus_ops),
+        "plus_point_count": len(program.plus_ops),
         "student_teacher_cosine": F.cosine_similarity(
             student_query.unsqueeze(0),
             teacher_query.unsqueeze(0),
@@ -134,8 +136,8 @@ def evaluate_case(
 
 def summarize(results: list[dict]) -> dict:
     keys = [
-        "minus_box_count",
-        "plus_box_count",
+        "minus_point_count",
+        "plus_point_count",
         "student_teacher_cosine",
         "teacher_positive_hit_rate",
         "teacher_negative_false_positive_rate",
@@ -154,7 +156,7 @@ def summarize(results: list[dict]) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Benchmark dual-rope rectangle region programs.")
+    parser = argparse.ArgumentParser(description="Benchmark dual-rope point region programs across term budgets.")
     parser.add_argument("--cases", required=True)
     parser.add_argument("--teacher-model", default="intfloat/e5-base-v2")
     parser.add_argument("--student-checkpoint", required=True)
@@ -162,6 +164,7 @@ def main() -> None:
     parser.add_argument("--inside-threshold", type=float, default=0.9)
     parser.add_argument("--radius-scale", type=float, default=1.0)
     parser.add_argument("--min-radius", type=float, default=0.01)
+    parser.add_argument("--budgets", type=int, nargs="+", default=[16, 32, 64, 128])
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -171,18 +174,25 @@ def main() -> None:
     teacher = TeacherEncoder(args.teacher_model, device=device, max_length=args.max_length)
     student = StudentEncoder(args.student_checkpoint, device=device, max_length=args.max_length)
 
-    results = [
-        evaluate_case(
-            case=case,
-            teacher=teacher,
-            student=student,
-            inside_threshold=args.inside_threshold,
-            radius_scale=args.radius_scale,
-            min_radius=args.min_radius,
-        )
-        for case in cases
-    ]
-    print(json.dumps({"summary": summarize(results), "cases": results}, indent=2))
+    payload: dict[str, object] = {"budgets": {}}
+    for budget in args.budgets:
+        results = [
+            evaluate_case(
+                case=case,
+                teacher=teacher,
+                student=student,
+                inside_threshold=args.inside_threshold,
+                radius_scale=args.radius_scale,
+                min_radius=args.min_radius,
+                terms_per_side=budget,
+            )
+            for case in cases
+        ]
+        payload["budgets"][str(budget)] = {
+            "summary": summarize(results),
+            "cases": results,
+        }
+    print(json.dumps(payload, indent=2))
 
 
 if __name__ == "__main__":

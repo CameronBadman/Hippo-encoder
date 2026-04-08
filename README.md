@@ -174,12 +174,13 @@ python scripts/benchmark_group_region.py \
 
 This keeps the encoder vector as the anchor and replaces raw per-dimension bounds with grouped `minus/plus` arrays over fixed blocks of dimensions.
 
-Benchmark a dual-rope rectangle region program:
+Benchmark a dual-rope point region program across budgets:
 
 ```bash
 python scripts/benchmark_rope_region.py \
   --cases benchmarks/sample_region_cases.json \
-  --student-checkpoint /path/to/checkpoint/epoch-2
+  --student-checkpoint /path/to/checkpoint/epoch-2 \
+  --budgets 16 32 64 128
 ```
 
 This maps dimensions onto two deterministic ropes. Each region op is:
@@ -189,7 +190,7 @@ This maps dimensions onto two deterministic ropes. Each region op is:
 - `rope` (`0` or `1`)
 - `value`
 
-and the program applies rectangle ranges over that two-rope layout instead of dense per-dimension widths.
+and the program applies exact point updates on that two-rope layout. The benchmark reports how teacher/student behavior changes as the term budget increases.
 
 Benchmark a ranged formula-based region program:
 
@@ -264,14 +265,14 @@ python scripts/benchmark_student_formula_region.py \
 - `scripts/train_student_formula_behavior.py`: train the native formula head directly on positive/negative region behavior
 - `scripts/benchmark_student_formula_region.py`: benchmark a student-owned formula head
 - `scripts/benchmark_group_region.py`: grouped anchor-preserving region benchmark
-- `scripts/benchmark_rope_region.py`: two-rope rectangle region benchmark
+- `scripts/benchmark_rope_region.py`: two-rope point-region benchmark across budgets
 - `scripts/benchmark_region_program_size.py`: dense-vs-sparse program size benchmark
 - `scripts/prepare_text_dataset.py`: download and export public text data to JSONL
 - `scripts/prepare_region_cases.py`: build region training cases from text JSONL via teacher-space neighbors
 - `prompts/ranged_formula_region_prompt.md`: prompt/spec for direct ranged-formula program generation
 - `src/hippo_encoder/formula_region.py`: compact formula-based plus/minus region program
 - `src/hippo_encoder/group_region.py`: grouped two-array region program
-- `src/hippo_encoder/rope_region.py`: two-rope rectangle region program
+- `src/hippo_encoder/rope_region.py`: two-rope point/rectangle region programs
 - `src/hippo_encoder/region.py`: sparse two-array region program, hydration, and scoring
 - `src/hippo_encoder/data.py`: local text-only dataset loader
 - `src/hippo_encoder/teacher.py`: frozen text teacher wrapper
