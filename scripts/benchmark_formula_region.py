@@ -131,7 +131,7 @@ def main() -> None:
     parser.add_argument("--inside-threshold", type=float, default=0.75)
     parser.add_argument("--radius-scale", type=float, default=1.5)
     parser.add_argument("--min-radius", type=float, default=0.01)
-    parser.add_argument("--max-terms-per-side", type=int, default=12)
+    parser.add_argument("--max-terms-per-side", type=int, default=24)
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

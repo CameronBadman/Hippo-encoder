@@ -91,10 +91,12 @@ Benchmark a ranged formula-based region program:
 ```bash
 python scripts/benchmark_formula_region.py \
   --cases benchmarks/sample_region_cases.json \
-  --max-terms-per-side 12
+  --max-terms-per-side 24
 ```
 
 This fits a compact local-formula DSL to the `minus/plus` arrays with bounded terms such as constants, ramps, and Gaussian bumps over explicit dimension ranges. This is closer to "draw the shape you want" than the earlier global-only formula.
+
+For direct model generation, use [ranged_formula_region_prompt.md](/home/cameron/projects/Hippo-encoder/prompts/ranged_formula_region_prompt.md) as the starting prompt/spec. It explicitly encourages broad blanket margins plus local refinements instead of overly conservative shapes.
 
 ## Default Setup
 
@@ -111,6 +113,7 @@ This fits a compact local-formula DSL to the `minus/plus` arrays with bounded te
 - `scripts/benchmark_group_region.py`: grouped anchor-preserving region benchmark
 - `scripts/benchmark_region_program_size.py`: dense-vs-sparse program size benchmark
 - `scripts/prepare_text_dataset.py`: download and export public text data to JSONL
+- `prompts/ranged_formula_region_prompt.md`: prompt/spec for direct ranged-formula program generation
 - `src/hippo_encoder/formula_region.py`: compact formula-based plus/minus region program
 - `src/hippo_encoder/group_region.py`: grouped two-array region program
 - `src/hippo_encoder/region.py`: sparse two-array region program, hydration, and scoring

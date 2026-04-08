@@ -70,7 +70,7 @@ class FormulaRegionProgram:
         negatives: torch.Tensor | None = None,
         base_radius: float = 0.01,
         radius_scale: float = 1.0,
-        max_terms_per_side: int = 12,
+        max_terms_per_side: int = 24,
     ) -> "FormulaRegionProgram":
         if anchor.dim() != 1:
             raise ValueError("Anchor must be a 1D tensor.")
