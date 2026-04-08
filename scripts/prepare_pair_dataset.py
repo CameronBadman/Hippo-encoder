@@ -84,7 +84,7 @@ def export_msmarco_triplet(
     prefix: str,
     output: Path,
 ) -> int:
-    dataset = load_dataset("sentence-transformers/msmarco", "triplet", split=split)
+    dataset = load_dataset("sentence-transformers/msmarco", "triplets", split=split)
     rows_written = 0
     with output.open("w", encoding="utf-8") as handle:
         for row in dataset:
