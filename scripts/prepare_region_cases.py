@@ -17,24 +17,34 @@ def masked_mean(hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> to
     return masked.sum(dim=1) / denom
 
 
-def load_texts(path: str | Path, limit: int | None) -> list[str]:
-    rows: list[str] = []
+def load_rows(path: str | Path, limit: int | None) -> list[dict]:
+    rows: list[dict] = []
     with Path(path).open("r", encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
             if not line:
                 continue
             payload = json.loads(line)
-            text = payload.get("text")
-            if not isinstance(text, str):
-                continue
-            text = text.strip()
-            if not text:
-                continue
-            rows.append(text)
+            rows.append(payload)
             if limit is not None and len(rows) >= limit:
                 break
     return rows
+
+
+def load_texts(path: str | Path, limit: int | None) -> list[str]:
+    texts: list[str] = []
+    seen: set[str] = set()
+    for payload in load_rows(path, limit=limit):
+        for key in ("text", "anchor", "positive", "negative"):
+            value = payload.get(key)
+            if not isinstance(value, str):
+                continue
+            value = value.strip()
+            if not value or value in seen:
+                continue
+            texts.append(value)
+            seen.add(value)
+    return texts
 
 
 @torch.no_grad()
@@ -152,6 +162,100 @@ def build_cases(
     return cases
 
 
+def build_cases_from_pairs(
+    rows: list[dict],
+    texts: list[str],
+    embeds: torch.Tensor,
+    positives_per_case: int,
+    negatives_per_case: int,
+    positive_pool: int,
+    hard_negative_pool: int,
+    hard_negative_fraction: float,
+    seed: int,
+) -> list[dict]:
+    text_to_index = {text: idx for idx, text in enumerate(texts)}
+    if len(text_to_index) != len(texts):
+        raise ValueError("Texts must be unique when building pair-derived region cases.")
+
+    generator = random.Random(seed)
+    sims = embeds @ embeds.T
+    sims.fill_diagonal_(-1.0)
+
+    cases: list[dict] = []
+    for row in rows:
+        query = row.get("anchor")
+        positive = row.get("positive")
+        negative = row.get("negative")
+        if not isinstance(query, str) or not isinstance(positive, str):
+            continue
+        query = query.strip()
+        positive = positive.strip()
+        if not query or not positive or query not in text_to_index or positive not in text_to_index:
+            continue
+
+        query_index = text_to_index[query]
+        ranking = torch.argsort(sims[query_index], descending=True)
+
+        positives = [positive]
+        for candidate_index in ranking[:positive_pool].tolist():
+            candidate_text = texts[candidate_index]
+            if candidate_text == query or candidate_text in positives:
+                continue
+            positives.append(candidate_text)
+            if len(positives) >= positives_per_case:
+                break
+        if len(positives) < positives_per_case:
+            continue
+
+        hard_needed = min(negatives_per_case, max(0, int(round(negatives_per_case * hard_negative_fraction))))
+        easy_needed = negatives_per_case - hard_needed
+
+        negatives: list[str] = []
+        if isinstance(negative, str):
+            negative = negative.strip()
+            if negative and negative != query and negative not in positives:
+                negatives.append(negative)
+
+        hard_slice_start = max(positive_pool, 1)
+        hard_slice_end = min(len(texts), hard_slice_start + max(hard_negative_pool, hard_needed + len(negatives)))
+        hard_candidates = [
+            candidate
+            for candidate in ranking[hard_slice_start:hard_slice_end].tolist()
+            if texts[candidate] != query and texts[candidate] not in positives and texts[candidate] not in negatives
+        ]
+        generator.shuffle(hard_candidates)
+
+        easy_candidates = [
+            candidate
+            for candidate in ranking.flip(0).tolist()
+            if texts[candidate] != query and texts[candidate] not in positives and texts[candidate] not in negatives
+        ]
+        generator.shuffle(easy_candidates)
+
+        for candidate_index in hard_candidates:
+            if len(negatives) >= hard_needed:
+                break
+            negatives.append(texts[candidate_index])
+        for candidate_index in easy_candidates:
+            if len(negatives) >= negatives_per_case:
+                break
+            negatives.append(texts[candidate_index])
+
+        negatives = negatives[:negatives_per_case]
+        if len(negatives) < negatives_per_case:
+            continue
+
+        cases.append(
+            {
+                "query": query,
+                "positives": positives[:positives_per_case],
+                "negatives": negatives,
+            }
+        )
+
+    return cases
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build query/positive/negative region cases from a text JSONL file.")
     parser.add_argument("--input-jsonl", required=True, help="Source JSONL with `text` rows.")
@@ -179,6 +283,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
+    rows = load_rows(args.input_jsonl, limit=args.text_limit)
     texts = load_texts(args.input_jsonl, limit=args.text_limit)
     if len(texts) < args.positives_per_case + args.negatives_per_case + 1:
         raise ValueError("Not enough texts to build region cases.")
@@ -192,17 +297,30 @@ def main() -> None:
         batch_size=args.batch_size,
     )
 
-    cases = build_cases(
-        texts=texts,
-        embeds=embeds,
-        num_cases=args.num_cases,
-        positives_per_case=args.positives_per_case,
-        negatives_per_case=args.negatives_per_case,
-        positive_pool=args.positive_pool,
-        hard_negative_pool=args.hard_negative_pool,
-        hard_negative_fraction=args.hard_negative_fraction,
-        seed=args.seed,
-    )
+    if rows and any("anchor" in row for row in rows):
+        cases = build_cases_from_pairs(
+            rows=rows[: args.num_cases],
+            texts=texts,
+            embeds=embeds,
+            positives_per_case=args.positives_per_case,
+            negatives_per_case=args.negatives_per_case,
+            positive_pool=args.positive_pool,
+            hard_negative_pool=args.hard_negative_pool,
+            hard_negative_fraction=args.hard_negative_fraction,
+            seed=args.seed,
+        )
+    else:
+        cases = build_cases(
+            texts=texts,
+            embeds=embeds,
+            num_cases=args.num_cases,
+            positives_per_case=args.positives_per_case,
+            negatives_per_case=args.negatives_per_case,
+            positive_pool=args.positive_pool,
+            hard_negative_pool=args.hard_negative_pool,
+            hard_negative_fraction=args.hard_negative_fraction,
+            seed=args.seed,
+        )
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
