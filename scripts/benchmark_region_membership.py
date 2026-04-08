@@ -46,8 +46,8 @@ class StudentEncoder:
         self.max_length = max_length
         checkpoint_dir = Path(checkpoint_dir)
 
-        self.tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir / "tokenizer")
-        self.backbone = AutoModel.from_pretrained(checkpoint_dir / "backbone").to(device).eval()
+        self.tokenizer = AutoTokenizer.from_pretrained(str(checkpoint_dir / "tokenizer"))
+        self.backbone = AutoModel.from_pretrained(str(checkpoint_dir / "backbone")).to(device).eval()
         heads = torch.load(checkpoint_dir / "heads.pt", map_location=device)
 
         target_dim = heads["embed_head"]["weight"].shape[0]
