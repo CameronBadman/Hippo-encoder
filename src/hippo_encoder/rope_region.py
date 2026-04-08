@@ -51,6 +51,21 @@ class RopeShapeOp:
 
 
 @dataclass
+class RopeFormulaTerm:
+    target: str
+    rope: int
+    term_type: str
+    cx: float
+    cy: float
+    amp: float
+    sx: float = 1.0
+    sy: float = 1.0
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class DualRopeRegionProgram:
     dimensions: int
     base_minus: float
@@ -365,6 +380,116 @@ class DualRopeShapeProgram:
                 raise ValueError(f"Unsupported op mode: {op.mode}")
 
 
+@dataclass
+class DualRopeFormulaProgram:
+    dimensions: int
+    base_minus: float
+    base_plus: float
+    minus_terms: list[RopeFormulaTerm]
+    plus_terms: list[RopeFormulaTerm]
+
+    def hydrate(self, anchor: torch.Tensor) -> dict[str, torch.Tensor]:
+        if anchor.dim() != 1 or anchor.shape[0] != self.dimensions:
+            raise ValueError("Anchor must be a 1D tensor matching program dimensions.")
+
+        minus = torch.full_like(anchor, self.base_minus)
+        plus = torch.full_like(anchor, self.base_plus)
+        rope_ids, xs, ys = _layout_tensors(self.dimensions, device=anchor.device)
+        xs = xs.to(anchor.dtype)
+        ys = ys.to(anchor.dtype)
+
+        self._apply_terms(minus, self.minus_terms, rope_ids=rope_ids, xs=xs, ys=ys)
+        self._apply_terms(plus, self.plus_terms, rope_ids=rope_ids, xs=xs, ys=ys)
+        minus = torch.clamp(minus, min=0.0)
+        plus = torch.clamp(plus, min=0.0)
+
+        return {
+            "minus": minus,
+            "plus": plus,
+            "lower": anchor - minus,
+            "upper": anchor + plus,
+        }
+
+    def to_dict(self) -> dict:
+        return {
+            "dimensions": self.dimensions,
+            "base_minus": self.base_minus,
+            "base_plus": self.base_plus,
+            "minus_terms": [term.to_dict() for term in self.minus_terms],
+            "plus_terms": [term.to_dict() for term in self.plus_terms],
+        }
+
+    @classmethod
+    def from_teacher_spread(
+        cls,
+        anchor: torch.Tensor,
+        positives: torch.Tensor,
+        terms_per_side: int,
+        base_radius: float = 0.01,
+        radius_scale: float = 1.0,
+        quantize_step: float = 0.01,
+        change_threshold: float = 0.005,
+    ) -> "DualRopeFormulaProgram":
+        if anchor.dim() != 1:
+            raise ValueError("Anchor must be a 1D tensor.")
+        if positives.dim() != 2 or positives.shape[1] != anchor.shape[0]:
+            raise ValueError("Positives must have shape [N, D] with same D as anchor.")
+
+        deltas = positives - anchor.unsqueeze(0)
+        minus = torch.clamp((-deltas).max(dim=0).values * radius_scale, min=base_radius)
+        plus = torch.clamp(deltas.max(dim=0).values * radius_scale, min=base_radius)
+
+        minus_terms = _fit_rope_formula_terms(
+            dense=minus,
+            base_value=base_radius,
+            target="minus",
+            terms=terms_per_side,
+            quantize_step=quantize_step,
+            change_threshold=change_threshold,
+        )
+        plus_terms = _fit_rope_formula_terms(
+            dense=plus,
+            base_value=base_radius,
+            target="plus",
+            terms=terms_per_side,
+            quantize_step=quantize_step,
+            change_threshold=change_threshold,
+        )
+        return cls(
+            dimensions=anchor.shape[0],
+            base_minus=base_radius,
+            base_plus=base_radius,
+            minus_terms=minus_terms,
+            plus_terms=plus_terms,
+        )
+
+    @staticmethod
+    def _apply_terms(
+        target: torch.Tensor,
+        terms: list[RopeFormulaTerm],
+        rope_ids: torch.Tensor,
+        xs: torch.Tensor,
+        ys: torch.Tensor,
+    ) -> None:
+        for term in terms:
+            mask = rope_ids == term.rope
+            local_x = xs[mask]
+            local_y = ys[mask]
+            if term.term_type == "gaussian":
+                values = term.amp * torch.exp(
+                    -0.5 * (((local_x - term.cx) / max(term.sx, 1e-4)) ** 2 + ((local_y - term.cy) / max(term.sy, 1e-4)) ** 2)
+                )
+            elif term.term_type == "ridge_x":
+                values = term.amp * torch.exp(-0.5 * (((local_x - term.cx) / max(term.sx, 1e-4)) ** 2))
+            elif term.term_type == "ridge_y":
+                values = term.amp * torch.exp(-0.5 * (((local_y - term.cy) / max(term.sy, 1e-4)) ** 2))
+            elif term.term_type == "const":
+                values = torch.full_like(local_x, term.amp)
+            else:
+                raise ValueError(f"Unsupported formula term type: {term.term_type}")
+            target[mask] += values
+
+
 def _rope_count(dimensions: int, rope: int) -> int:
     return (dimensions + (1 if rope == 0 else 0)) // 2
 
@@ -510,6 +635,132 @@ def _compress_rope_shapes(
             residual = torch.round(residual / quantize_step) * quantize_step
 
     return ops
+
+
+def _fit_rope_formula_terms(
+    dense: torch.Tensor,
+    base_value: float,
+    target: str,
+    terms: int,
+    quantize_step: float,
+    change_threshold: float,
+) -> list[RopeFormulaTerm]:
+    if dense.dim() != 1:
+        raise ValueError("Dense array must be 1D.")
+    if terms <= 0:
+        return []
+
+    terms_out: list[RopeFormulaTerm] = []
+    for rope in (0, 1):
+        rope_values = dense[rope::2]
+        if rope_values.numel() == 0:
+            continue
+        width = _rope_width(rope_values.numel())
+        height = math.ceil(rope_values.numel() / width)
+        residual = torch.zeros((height, width), dtype=rope_values.dtype)
+        valid = torch.zeros((height, width), dtype=torch.bool)
+        residual.view(-1)[: rope_values.numel()] = rope_values - base_value
+        residual = torch.round(residual / quantize_step) * quantize_step
+        valid.view(-1)[: rope_values.numel()] = True
+
+        per_rope_terms = math.ceil(terms / 2)
+        for _ in range(per_rope_terms):
+            mask = valid & (torch.abs(residual) >= change_threshold)
+            if not bool(mask.any()):
+                break
+            term, values = _best_formula_term(
+                residual=residual,
+                valid=valid,
+                target=target,
+                rope=rope,
+            )
+            if term is None or values is None:
+                break
+            term_grid = torch.zeros_like(residual)
+            term_grid[valid] = values
+            residual = residual - term_grid
+            residual = torch.round(residual / quantize_step) * quantize_step
+            terms_out.append(term)
+            if len(terms_out) >= terms:
+                break
+        if len(terms_out) >= terms:
+            break
+    return terms_out[:terms]
+
+
+def _best_formula_term(
+    residual: torch.Tensor,
+    valid: torch.Tensor,
+    target: str,
+    rope: int,
+) -> tuple[RopeFormulaTerm | None, torch.Tensor | None]:
+    scores = torch.abs(torch.where(valid, residual, torch.zeros_like(residual)))
+    best_index = torch.argmax(scores)
+    cy = float((best_index // residual.shape[1]).item())
+    cx = float((best_index % residual.shape[1]).item())
+    amp0 = float(residual[int(cy), int(cx)].item())
+    if abs(amp0) < 1e-8:
+        return None, None
+
+    candidates: list[RopeFormulaTerm] = []
+    for sx in (0.75, 1.5, 3.0):
+        for sy in (0.75, 1.5, 3.0):
+            candidates.append(RopeFormulaTerm(target=target, rope=rope, term_type="gaussian", cx=cx, cy=cy, amp=amp0, sx=sx, sy=sy))
+    for sx in (0.75, 1.5, 3.0, 6.0):
+        candidates.append(RopeFormulaTerm(target=target, rope=rope, term_type="ridge_x", cx=cx, cy=cy, amp=amp0, sx=sx, sy=1.0))
+    for sy in (0.75, 1.5, 3.0, 6.0):
+        candidates.append(RopeFormulaTerm(target=target, rope=rope, term_type="ridge_y", cx=cx, cy=cy, amp=amp0, sx=1.0, sy=sy))
+    candidates.append(RopeFormulaTerm(target=target, rope=rope, term_type="const", cx=cx, cy=cy, amp=amp0, sx=1.0, sy=1.0))
+
+    ys, xs = torch.meshgrid(
+        torch.arange(residual.shape[0], dtype=residual.dtype, device=residual.device),
+        torch.arange(residual.shape[1], dtype=residual.dtype, device=residual.device),
+        indexing="ij",
+    )
+    best_score = -1.0
+    best_term: RopeFormulaTerm | None = None
+    best_values: torch.Tensor | None = None
+    valid_vals = residual[valid]
+    valid_mean_abs = float(torch.abs(valid_vals).mean().item()) if valid_vals.numel() else 0.0
+    for term in candidates:
+        values = _formula_values(term, xs, ys)
+        masked_values = values[valid]
+        if masked_values.numel() == 0:
+            continue
+        numer = float((valid_vals * masked_values).sum().item())
+        denom = float((masked_values * masked_values).sum().item()) + 1e-8
+        amp = numer / denom
+        trial = RopeFormulaTerm(
+            target=term.target,
+            rope=term.rope,
+            term_type=term.term_type,
+            cx=term.cx,
+            cy=term.cy,
+            amp=amp,
+            sx=term.sx,
+            sy=term.sy,
+        )
+        fitted = _formula_values(trial, xs, ys)
+        score = float(torch.abs((valid_vals * fitted[valid]).sum()).item()) / (valid_mean_abs + 1e-8)
+        if score > best_score:
+            best_score = score
+            best_term = trial
+            best_values = fitted[valid]
+    return best_term, best_values
+
+
+def _formula_values(term: RopeFormulaTerm, xs: torch.Tensor, ys: torch.Tensor) -> torch.Tensor:
+    if term.term_type == "gaussian":
+        return term.amp * torch.exp(
+            -0.5 * (((xs - term.cx) / max(term.sx, 1e-4)) ** 2 + ((ys - term.cy) / max(term.sy, 1e-4)) ** 2)
+        )
+    if term.term_type == "ridge_x":
+        return term.amp * torch.exp(-0.5 * (((xs - term.cx) / max(term.sx, 1e-4)) ** 2))
+    if term.term_type == "ridge_y":
+        return term.amp * torch.exp(-0.5 * (((ys - term.cy) / max(term.sy, 1e-4)) ** 2))
+    if term.term_type == "const":
+        return torch.full_like(xs, term.amp)
+    raise ValueError(f"Unsupported formula term type: {term.term_type}")
 
 
 def _best_shape_op(

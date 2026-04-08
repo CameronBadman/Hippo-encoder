@@ -8,7 +8,13 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
 
-from hippo_encoder.rope_region import DualRopePointProgram, DualRopeShapeProgram, inside_fraction, soft_box_distance
+from hippo_encoder.rope_region import (
+    DualRopeFormulaProgram,
+    DualRopePointProgram,
+    DualRopeShapeProgram,
+    inside_fraction,
+    soft_box_distance,
+)
 from hippo_encoder.student import TinyEncoderStudent
 
 
@@ -89,6 +95,14 @@ def evaluate_case(
             base_radius=min_radius,
             radius_scale=radius_scale,
         )
+    elif program_type == "formula":
+        program = DualRopeFormulaProgram.from_teacher_spread(
+            anchor=teacher_query,
+            positives=teacher_positives,
+            terms_per_side=terms_per_side,
+            base_radius=min_radius,
+            radius_scale=radius_scale,
+        )
     else:
         raise ValueError(f"Unsupported program type: {program_type}")
     teacher_region = program.hydrate(teacher_query)
@@ -162,7 +176,7 @@ def main() -> None:
     parser.add_argument("--radius-scale", type=float, default=1.0)
     parser.add_argument("--min-radius", type=float, default=0.01)
     parser.add_argument("--budgets", type=int, nargs="+", default=[16, 32, 64, 128])
-    parser.add_argument("--program-type", choices=("point", "shape"), default="point")
+    parser.add_argument("--program-type", choices=("point", "shape", "formula"), default="point")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
