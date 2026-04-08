@@ -1,15 +1,19 @@
 # Hippo-encoder
 
-Minimal framework for distilling a text embedding teacher into a small language model that learns the teacher's semantic space.
+Minimal framework for the original tiny-LLM idea:
 
-## What This Does
+- freeze a strong teacher encoder
+- train a small language model to internalize that encoder's semantic space
+- evaluate whether the tiny model preserves the teacher geometry well enough to act like a cheap encoder
 
-The current training stack freezes a text encoder teacher and trains a small text model to predict:
+## Core Idea
+
+The primary path in this repo freezes a text encoder teacher and trains a small text model to predict:
 
 - the teacher text embedding for the input text
 - the teacher hidden-state summary
 
-This is the simplest path toward a tiny model that starts to internalize another encoder's representation geometry without bringing in image data yet.
+This is the reset architecture. The tiny model itself is the thing being trained to act like the teacher encoder.
 
 ## Dataset Format
 
@@ -32,7 +36,7 @@ pip install -e .
 Run training:
 
 ```bash
-python -m hippo_encoder.train --config configs/distill_clip_tiny.json
+python -m hippo_encoder.train --config configs/tiny_llm_reset.json
 ```
 
 Bootstrap a few thousand public text rows from Hugging Face:
@@ -59,6 +63,19 @@ python scripts/prepare_region_cases.py \
 This embeds the text rows with the teacher, picks near neighbors as positives, and samples hard plus easy negatives to produce `query / positives / negatives` supervision for the formula head.
 
 For Google Colab, use [Hippo_Encoder_Colab.ipynb](/home/cameron/projects/Hippo-encoder/Hippo_Encoder_Colab.ipynb).
+
+Evaluate a trained tiny encoder checkpoint:
+
+```bash
+python scripts/eval_student_encoder.py \
+  --student-checkpoint /path/to/checkpoint/epoch-2
+```
+
+This reports teacher-student cosine agreement, nearest-neighbor overlap, and a few paraphrase checks.
+
+## Experimental Region Work
+
+The repo also contains region / delta / formula experiments. Those are exploratory and are not the primary reset architecture.
 
 Benchmark region-style IN membership:
 
@@ -151,11 +168,12 @@ python scripts/benchmark_student_formula_region.py \
 
 - Teacher: `intfloat/e5-base-v2`
 - Student: `BAAI/bge-small-en-v1.5`
-- Losses: cosine matching to teacher text embeddings plus a contrastive term
+- Losses: cosine matching to teacher text embeddings plus hidden-state matching
 
 ## Repo Layout
 
-- `configs/distill_clip_tiny.json`: example config
+- `configs/tiny_llm_reset.json`: reset config for the original tiny-LLM-to-teacher setup
+- `scripts/eval_student_encoder.py`: clean held-out evaluation for the distilled student encoder
 - `benchmarks/sample_region_cases.json`: sample IN/OUT benchmark cases
 - `scripts/benchmark_region_membership.py`: region-membership benchmark for query/positive/negative cases
 - `scripts/benchmark_formula_region.py`: formula-based region benchmark
@@ -179,9 +197,9 @@ python scripts/benchmark_student_formula_region.py \
 
 ## Next Steps
 
-Useful upgrades from here:
+Useful upgrades from the reset path:
 
 - compare `BAAI/bge-small-en-v1.5` against other small students
 - add richer teacher targets from intermediate layers instead of only pooled outputs
-- add a second positional scheme if you want to experiment with dual-RoPE token structure
-- add evaluation for retrieval recall and nearest-neighbor alignment
+- expand held-out evaluation coverage and retrieval diagnostics
+- only revisit delta / region generation after the tiny encoder itself is clearly strong
