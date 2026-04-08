@@ -108,6 +108,24 @@ python scripts/benchmark_generate_formula_region.py \
 
 This uses an instruction model to emit the ranged-formula JSON directly, validates it, hydrates it, and scores it on the same IN/OUT benchmark cases.
 
+Train a native student formula head from query/positive/negative cases:
+
+```bash
+python scripts/train_student_formula_head.py \
+  --student-checkpoint /path/to/distill-bge-small/epoch-2 \
+  --cases benchmarks/sample_region_cases.json \
+  --output-dir /tmp/hippo_formula_head \
+  --freeze-backbone
+```
+
+Benchmark the student-owned formula head:
+
+```bash
+python scripts/benchmark_student_formula_region.py \
+  --student-checkpoint /tmp/hippo_formula_head/epoch-199 \
+  --cases benchmarks/sample_region_cases.json
+```
+
 ## Default Setup
 
 - Teacher: `intfloat/e5-base-v2`
@@ -121,6 +139,8 @@ This uses an instruction model to emit the ranged-formula JSON directly, validat
 - `scripts/benchmark_region_membership.py`: region-membership benchmark for query/positive/negative cases
 - `scripts/benchmark_formula_region.py`: formula-based region benchmark
 - `scripts/benchmark_generate_formula_region.py`: direct model-generated formula benchmark
+- `scripts/train_student_formula_head.py`: train a native student-owned formula head from region cases
+- `scripts/benchmark_student_formula_region.py`: benchmark a student-owned formula head
 - `scripts/benchmark_group_region.py`: grouped anchor-preserving region benchmark
 - `scripts/benchmark_region_program_size.py`: dense-vs-sparse program size benchmark
 - `scripts/prepare_text_dataset.py`: download and export public text data to JSONL

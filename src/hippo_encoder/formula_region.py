@@ -5,6 +5,9 @@ from dataclasses import asdict, dataclass
 
 import torch
 
+TERM_TYPES = ("box", "const", "ramp", "gaussian")
+TERM_TYPE_TO_ID = {name: index for index, name in enumerate(TERM_TYPES)}
+
 
 @dataclass
 class RangedFormulaTerm:
@@ -390,3 +393,69 @@ def _parse_generated_terms(items: list[dict], dimensions: int, target_name: str)
             )
         )
     return parsed
+
+
+def encode_program_slots(
+    program: FormulaRegionProgram,
+    max_terms_per_side: int,
+) -> dict[str, dict[str, torch.Tensor]]:
+    return {
+        "minus": encode_term_slots(program.minus_terms, program.dimensions, max_terms_per_side),
+        "plus": encode_term_slots(program.plus_terms, program.dimensions, max_terms_per_side),
+    }
+
+
+def encode_term_slots(
+    terms: list[RangedFormulaTerm],
+    dimensions: int,
+    max_terms: int,
+) -> dict[str, torch.Tensor]:
+    active = torch.zeros(max_terms, dtype=torch.float32)
+    type_id = torch.zeros(max_terms, dtype=torch.long)
+    start = torch.zeros(max_terms, dtype=torch.float32)
+    end = torch.zeros(max_terms, dtype=torch.float32)
+    amplitude = torch.zeros(max_terms, dtype=torch.float32)
+    start_value = torch.zeros(max_terms, dtype=torch.float32)
+    end_value = torch.zeros(max_terms, dtype=torch.float32)
+    center_ratio = torch.zeros(max_terms, dtype=torch.float32)
+    width_ratio = torch.zeros(max_terms, dtype=torch.float32)
+
+    amplitude_mask = torch.zeros(max_terms, dtype=torch.float32)
+    ramp_mask = torch.zeros(max_terms, dtype=torch.float32)
+    gaussian_mask = torch.zeros(max_terms, dtype=torch.float32)
+
+    denom = max(1, dimensions - 1)
+    for slot_index, term in enumerate(terms[:max_terms]):
+        active[slot_index] = 1.0
+        type_id[slot_index] = TERM_TYPE_TO_ID.get(term.term_type, 0)
+        start[slot_index] = term.start / denom
+        end[slot_index] = term.end / denom
+
+        if term.term_type in {"box", "const", "gaussian"}:
+            amplitude[slot_index] = float(term.amplitude)
+            amplitude_mask[slot_index] = 1.0
+
+        if term.term_type == "ramp":
+            ramp_mask[slot_index] = 1.0
+            start_value[slot_index] = float(term.start_value or 0.0)
+            end_value[slot_index] = float(term.end_value or 0.0)
+
+        if term.term_type == "gaussian":
+            gaussian_mask[slot_index] = 1.0
+            center_ratio[slot_index] = float(term.center_ratio or 0.5)
+            width_ratio[slot_index] = float(term.width_ratio or 0.25)
+
+    return {
+        "active": active,
+        "type_id": type_id,
+        "start": start,
+        "end": end,
+        "amplitude": amplitude,
+        "start_value": start_value,
+        "end_value": end_value,
+        "center_ratio": center_ratio,
+        "width_ratio": width_ratio,
+        "amplitude_mask": amplitude_mask,
+        "ramp_mask": ramp_mask,
+        "gaussian_mask": gaussian_mask,
+    }

@@ -116,6 +116,8 @@ def save_checkpoint(path: Path, student: TinyEncoderStudent, config: DistillConf
         {
             "embed_head": student.embed_head.state_dict(),
             "hidden_head": student.hidden_head.state_dict(),
+            "formula_head": student.formula_head.state_dict() if student.formula_head is not None else None,
+            "formula_terms_per_side": student.formula_head.terms_per_side if student.formula_head is not None else 0,
             "config": config.__dict__,
         },
         path / "heads.pt",
