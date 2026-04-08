@@ -34,6 +34,33 @@ class FormulaRegionHead(nn.Module):
             "plus": self._split_side(self.plus_head(pooled_hidden)),
         }
 
+    def hydrate_soft_region(
+        self,
+        outputs: dict[str, dict[str, torch.Tensor]],
+        anchor: torch.Tensor,
+        base_minus: float,
+        base_plus: float,
+        sharpness: float = 40.0,
+    ) -> dict[str, torch.Tensor]:
+        if anchor.dim() == 1:
+            anchor = anchor.unsqueeze(0)
+        dimensions = anchor.shape[-1]
+        x = torch.linspace(0.0, 1.0, steps=dimensions, device=anchor.device, dtype=anchor.dtype).view(1, 1, -1)
+
+        minus = anchor.new_full(anchor.shape, base_minus)
+        plus = anchor.new_full(anchor.shape, base_plus)
+        minus = minus + self._soft_side_contrib(outputs["minus"], x, sharpness)
+        plus = plus + self._soft_side_contrib(outputs["plus"], x, sharpness)
+        minus = torch.clamp(minus, min=0.0)
+        plus = torch.clamp(plus, min=0.0)
+
+        return {
+            "minus": minus,
+            "plus": plus,
+            "lower": anchor - minus,
+            "upper": anchor + plus,
+        }
+
     def decode_program(
         self,
         outputs: dict[str, dict[str, torch.Tensor]],
@@ -107,6 +134,45 @@ class FormulaRegionHead(nn.Module):
             "center_ratio": tensor[..., 10],
             "width_ratio": tensor[..., 11],
         }
+
+    def _soft_side_contrib(
+        self,
+        side: dict[str, torch.Tensor],
+        x: torch.Tensor,
+        sharpness: float,
+    ) -> torch.Tensor:
+        active = torch.sigmoid(side["active_logits"]).unsqueeze(-1)
+        type_probs = torch.softmax(side["type_logits"], dim=-1)
+
+        raw_start = torch.sigmoid(side["start"]).unsqueeze(-1)
+        raw_end = torch.sigmoid(side["end"]).unsqueeze(-1)
+        start = torch.minimum(raw_start, raw_end)
+        end = torch.maximum(raw_start, raw_end)
+        span = (end - start).clamp(min=1e-3)
+
+        left = torch.sigmoid(sharpness * (x - start))
+        right = torch.sigmoid(sharpness * (end - x))
+        mask = left * right
+
+        amplitude = F.softplus(side["amplitude"]).unsqueeze(-1)
+        start_value = F.softplus(side["start_value"]).unsqueeze(-1)
+        end_value = F.softplus(side["end_value"]).unsqueeze(-1)
+        center_ratio = torch.sigmoid(side["center_ratio"]).unsqueeze(-1)
+        width_ratio = torch.sigmoid(side["width_ratio"]).unsqueeze(-1).clamp(min=0.05)
+
+        local = ((x - start) / span).clamp(0.0, 1.0)
+        box_values = amplitude * mask
+        const_values = amplitude * mask
+        ramp_values = (start_value + (end_value - start_value) * local) * mask
+        gaussian_values = amplitude * torch.exp(-0.5 * ((local - center_ratio) / width_ratio) ** 2) * mask
+
+        values = (
+            type_probs[..., 0].unsqueeze(-1) * box_values
+            + type_probs[..., 1].unsqueeze(-1) * const_values
+            + type_probs[..., 2].unsqueeze(-1) * ramp_values
+            + type_probs[..., 3].unsqueeze(-1) * gaussian_values
+        )
+        return (active * values).sum(dim=1)
 
 
 class TinyEncoderStudent(nn.Module):

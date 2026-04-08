@@ -129,6 +129,16 @@ python scripts/train_student_formula_head.py \
   --freeze-backbone
 ```
 
+Train the formula head directly against region behavior:
+
+```bash
+python scripts/train_student_formula_behavior.py \
+  --student-checkpoint /path/to/distill-bge-small/epoch-2 \
+  --cases data/region_cases.json \
+  --output-dir /tmp/hippo_formula_behavior \
+  --freeze-backbone
+```
+
 Benchmark the student-owned formula head:
 
 ```bash
@@ -151,6 +161,7 @@ python scripts/benchmark_student_formula_region.py \
 - `scripts/benchmark_formula_region.py`: formula-based region benchmark
 - `scripts/benchmark_generate_formula_region.py`: direct model-generated formula benchmark
 - `scripts/train_student_formula_head.py`: train a native student-owned formula head from region cases
+- `scripts/train_student_formula_behavior.py`: train the native formula head directly on positive/negative region behavior
 - `scripts/benchmark_student_formula_region.py`: benchmark a student-owned formula head
 - `scripts/benchmark_group_region.py`: grouped anchor-preserving region benchmark
 - `scripts/benchmark_region_program_size.py`: dense-vs-sparse program size benchmark
