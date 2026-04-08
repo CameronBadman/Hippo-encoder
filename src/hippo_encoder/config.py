@@ -22,6 +22,7 @@ class DistillConfig:
     teacher_text_weight: float = 1.0
     hidden_state_weight: float = 0.2
     contrastive_weight: float = 0.2
+    contrastive_temperature: float = 0.07
     normalize_targets: bool = True
     gradient_clip_norm: float = 1.0
     warmup_steps: int = 100

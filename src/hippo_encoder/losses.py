@@ -10,6 +10,7 @@ def text_distillation_loss(
     teacher_text_weight: float,
     hidden_state_weight: float,
     contrastive_weight: float,
+    contrastive_temperature: float,
 ) -> tuple[torch.Tensor, dict]:
     text_loss = 1.0 - F.cosine_similarity(
         student_outputs["projected_embeds"],
@@ -23,6 +24,7 @@ def text_distillation_loss(
     ).mean()
 
     logits = student_outputs["projected_embeds"] @ teacher_outputs["text_embeds"].T
+    logits = logits / max(contrastive_temperature, 1e-6)
     labels = torch.arange(logits.size(0), device=logits.device)
     contrastive_loss = F.cross_entropy(logits, labels)
 

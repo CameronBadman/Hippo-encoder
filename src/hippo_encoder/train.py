@@ -84,6 +84,7 @@ def train(config: DistillConfig) -> None:
                 teacher_text_weight=config.teacher_text_weight,
                 hidden_state_weight=config.hidden_state_weight,
                 contrastive_weight=config.contrastive_weight,
+                contrastive_temperature=config.contrastive_temperature,
             )
 
             optimizer.zero_grad(set_to_none=True)
