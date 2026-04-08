@@ -63,6 +63,24 @@ class FormulaRegionProgram:
         }
 
     @classmethod
+    def from_generated_dict(
+        cls,
+        payload: dict,
+        dimensions: int,
+        base_minus: float = 0.01,
+        base_plus: float = 0.01,
+    ) -> "FormulaRegionProgram":
+        minus_terms = _parse_generated_terms(payload.get("minus_terms", []), dimensions, "minus")
+        plus_terms = _parse_generated_terms(payload.get("plus_terms", []), dimensions, "plus")
+        return cls(
+            dimensions=dimensions,
+            base_minus=base_minus,
+            base_plus=base_plus,
+            minus_terms=minus_terms,
+            plus_terms=plus_terms,
+        )
+
+    @classmethod
     def from_teacher_spread(
         cls,
         anchor: torch.Tensor,
@@ -323,3 +341,46 @@ def soft_box_distance(embeds: torch.Tensor, lower: torch.Tensor, upper: torch.Te
     below = torch.relu(lower.unsqueeze(0) - embeds)
     above = torch.relu(embeds - upper.unsqueeze(0))
     return (below + above).mean(dim=-1)
+
+
+def extract_json_object(text: str) -> dict:
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("No JSON object found in generated text.")
+    import json
+
+    return json.loads(text[start : end + 1])
+
+
+def _parse_generated_terms(items: list[dict], dimensions: int, target_name: str) -> list[RangedFormulaTerm]:
+    parsed: list[RangedFormulaTerm] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        term_type = str(item.get("term_type", "")).strip()
+        if term_type not in {"box", "const", "ramp", "gaussian"}:
+            continue
+
+        start = max(0, min(dimensions - 1, int(item.get("start", 0))))
+        end = max(start, min(dimensions - 1, int(item.get("end", dimensions - 1))))
+        amplitude = float(item.get("amplitude", 0.0))
+        start_value = item.get("start_value")
+        end_value = item.get("end_value")
+        center_ratio = item.get("center_ratio")
+        width_ratio = item.get("width_ratio")
+
+        parsed.append(
+            RangedFormulaTerm(
+                target=target_name,
+                term_type=term_type,
+                start=start,
+                end=end,
+                amplitude=amplitude,
+                start_value=float(start_value) if start_value is not None else None,
+                end_value=float(end_value) if end_value is not None else None,
+                center_ratio=float(center_ratio) if center_ratio is not None else None,
+                width_ratio=float(width_ratio) if width_ratio is not None else None,
+            )
+        )
+    return parsed

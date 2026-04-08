@@ -98,6 +98,16 @@ This fits a compact local-formula DSL to the `minus/plus` arrays with bounded te
 
 For direct model generation, use [ranged_formula_region_prompt.md](/home/cameron/projects/Hippo-encoder/prompts/ranged_formula_region_prompt.md) as the starting prompt/spec. It explicitly encourages broad blanket margins plus local refinements instead of overly conservative shapes.
 
+Benchmark direct model-generated formula regions:
+
+```bash
+python scripts/benchmark_generate_formula_region.py \
+  --cases benchmarks/sample_region_cases.json \
+  --generator-model Qwen/Qwen2.5-1.5B-Instruct
+```
+
+This uses an instruction model to emit the ranged-formula JSON directly, validates it, hydrates it, and scores it on the same IN/OUT benchmark cases.
+
 ## Default Setup
 
 - Teacher: `intfloat/e5-base-v2`
@@ -110,6 +120,7 @@ For direct model generation, use [ranged_formula_region_prompt.md](/home/cameron
 - `benchmarks/sample_region_cases.json`: sample IN/OUT benchmark cases
 - `scripts/benchmark_region_membership.py`: region-membership benchmark for query/positive/negative cases
 - `scripts/benchmark_formula_region.py`: formula-based region benchmark
+- `scripts/benchmark_generate_formula_region.py`: direct model-generated formula benchmark
 - `scripts/benchmark_group_region.py`: grouped anchor-preserving region benchmark
 - `scripts/benchmark_region_program_size.py`: dense-vs-sparse program size benchmark
 - `scripts/prepare_text_dataset.py`: download and export public text data to JSONL
