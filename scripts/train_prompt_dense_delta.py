@@ -50,6 +50,11 @@ def batched_soft_box_distance(embeds: torch.Tensor, lower: torch.Tensor, upper: 
     return (below + above).mean(dim=-1)
 
 
+def batched_inside_fraction(embeds: torch.Tensor, lower: torch.Tensor, upper: torch.Tensor) -> torch.Tensor:
+    inside = (embeds >= lower.unsqueeze(1)) & (embeds <= upper.unsqueeze(1))
+    return inside.float().mean(dim=-1)
+
+
 def build_prompted_inputs(batch: list[dict], instruction: str) -> list[str]:
     return [f"instruction: {instruction}\nquery: {row['query']}" for row in batch]
 
@@ -103,7 +108,7 @@ def main() -> None:
     parser.add_argument("--teacher-model", default="intfloat/e5-base-v2")
     parser.add_argument("--instruction", default=DEFAULT_INSTRUCTION)
     parser.add_argument("--max-length", type=int, default=128)
-    parser.add_argument("--base-radius", type=float, default=0.01)
+    parser.add_argument("--base-radius", type=float, default=0.02)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-2)
     parser.add_argument("--num-epochs", type=int, default=10)
@@ -112,7 +117,9 @@ def main() -> None:
     parser.add_argument("--save-every-epochs", type=int, default=5)
     parser.add_argument("--negative-margin", type=float, default=0.02)
     parser.add_argument("--negative-weight", type=float, default=2.0)
-    parser.add_argument("--size-weight", type=float, default=0.02)
+    parser.add_argument("--positive-inside-target", type=float, default=0.75)
+    parser.add_argument("--positive-coverage-weight", type=float, default=1.0)
+    parser.add_argument("--size-weight", type=float, default=0.0)
     parser.add_argument("--anchor-weight", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--freeze-backbone", action="store_true")
@@ -180,13 +187,16 @@ def main() -> None:
 
             pos_dist = batched_soft_box_distance(teacher_positives, region["lower"], region["upper"])
             neg_dist = batched_soft_box_distance(teacher_negatives, region["lower"], region["upper"])
+            pos_inside = batched_inside_fraction(teacher_positives, region["lower"], region["upper"])
 
             positive_loss = pos_dist.mean()
+            positive_coverage_loss = torch.relu(args.positive_inside_target - pos_inside).mean()
             negative_loss = torch.relu(args.negative_margin - neg_dist).mean()
             size_loss = (region["minus"].mean() + region["plus"].mean())
             anchor_loss = (1.0 - F.cosine_similarity(anchor, teacher_query, dim=-1)).mean()
             loss = (
                 positive_loss
+                + args.positive_coverage_weight * positive_coverage_loss
                 + args.negative_weight * negative_loss
                 + args.size_weight * size_loss
                 + args.anchor_weight * anchor_loss
@@ -204,6 +214,7 @@ def main() -> None:
                     f"epoch={epoch} step={global_step} "
                     f"loss={loss.detach().item():.4f} "
                     f"pos={positive_loss.detach().item():.4f} "
+                    f"cover={positive_coverage_loss.detach().item():.4f} "
                     f"neg={negative_loss.detach().item():.4f} "
                     f"size={size_loss.detach().item():.4f} "
                     f"anchor={anchor_loss.detach().item():.4f}"
