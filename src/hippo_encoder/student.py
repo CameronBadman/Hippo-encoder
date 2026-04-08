@@ -175,6 +175,46 @@ class FormulaRegionHead(nn.Module):
         return (active * values).sum(dim=1)
 
 
+class DenseDeltaHead(nn.Module):
+    def __init__(self, hidden_size: int, target_dim: int):
+        super().__init__()
+        inner = max(256, min(hidden_size * 2, 1024))
+        self.minus_head = nn.Sequential(
+            nn.Linear(hidden_size, inner),
+            nn.Tanh(),
+            nn.Linear(inner, target_dim),
+        )
+        self.plus_head = nn.Sequential(
+            nn.Linear(hidden_size, inner),
+            nn.Tanh(),
+            nn.Linear(inner, target_dim),
+        )
+
+    def forward(self, pooled_hidden: torch.Tensor) -> dict[str, torch.Tensor]:
+        return {
+            "minus_raw": self.minus_head(pooled_hidden),
+            "plus_raw": self.plus_head(pooled_hidden),
+        }
+
+    def hydrate_region(
+        self,
+        outputs: dict[str, torch.Tensor],
+        anchor: torch.Tensor,
+        base_minus: float,
+        base_plus: float,
+    ) -> dict[str, torch.Tensor]:
+        if anchor.dim() == 1:
+            anchor = anchor.unsqueeze(0)
+        minus = torch.clamp(F.softplus(outputs["minus_raw"]) + base_minus, min=0.0)
+        plus = torch.clamp(F.softplus(outputs["plus_raw"]) + base_plus, min=0.0)
+        return {
+            "minus": minus,
+            "plus": plus,
+            "lower": anchor - minus,
+            "upper": anchor + plus,
+        }
+
+
 class TinyEncoderStudent(nn.Module):
     def __init__(
         self,
@@ -182,6 +222,7 @@ class TinyEncoderStudent(nn.Module):
         target_dim: int,
         hidden_target_dim: int,
         formula_terms_per_side: int = 0,
+        enable_dense_delta_head: bool = False,
         tokenizer_name: str | None = None,
         backbone_name: str | None = None,
     ):
@@ -195,6 +236,7 @@ class TinyEncoderStudent(nn.Module):
         self.embed_head = nn.Linear(hidden_size, target_dim)
         self.hidden_head = nn.Linear(hidden_size, hidden_target_dim)
         self.formula_head = FormulaRegionHead(hidden_size, formula_terms_per_side) if formula_terms_per_side > 0 else None
+        self.dense_delta_head = DenseDeltaHead(hidden_size, target_dim) if enable_dense_delta_head else None
 
     def forward(self, texts, device: torch.device, max_length: int) -> dict:
         tokens = self.tokenizer(
@@ -217,6 +259,8 @@ class TinyEncoderStudent(nn.Module):
         }
         if self.formula_head is not None:
             outputs["formula_outputs"] = self.formula_head(pooled)
+        if self.dense_delta_head is not None:
+            outputs["dense_delta_outputs"] = self.dense_delta_head(pooled)
         return outputs
 
     @staticmethod
@@ -239,12 +283,14 @@ class TinyEncoderStudent(nn.Module):
         hidden_target_dim = heads["hidden_head"]["weight"].shape[0]
         saved_terms = int(heads.get("formula_terms_per_side", 0))
         term_budget = saved_terms if formula_terms_per_side is None else formula_terms_per_side
+        enable_dense_delta_head = heads.get("dense_delta_head") is not None
 
         student = cls(
             model_name=str(checkpoint_dir / "backbone"),
             target_dim=target_dim,
             hidden_target_dim=hidden_target_dim,
             formula_terms_per_side=term_budget,
+            enable_dense_delta_head=enable_dense_delta_head,
             tokenizer_name=str(checkpoint_dir / "tokenizer"),
             backbone_name=str(checkpoint_dir / "backbone"),
         ).to(device)
@@ -252,4 +298,6 @@ class TinyEncoderStudent(nn.Module):
         student.hidden_head.load_state_dict(heads["hidden_head"])
         if student.formula_head is not None and heads.get("formula_head") is not None:
             student.formula_head.load_state_dict(heads["formula_head"])
+        if student.dense_delta_head is not None and heads.get("dense_delta_head") is not None:
+            student.dense_delta_head.load_state_dict(heads["dense_delta_head"])
         return student

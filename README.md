@@ -113,6 +113,30 @@ This uses the simplest anchored representation:
 - swap only the anchor from teacher to student
 - measure how well the student anchor preserves IN/OUT behavior
 
+Train a prompt-conditioned dense delta head on top of the best tiny encoder checkpoint:
+
+```bash
+python scripts/train_prompt_dense_delta.py \
+  --student-checkpoint /path/to/checkpoint/epoch-2 \
+  --cases benchmarks/sample_region_cases.json \
+  --output-dir /tmp/prompt_dense_delta \
+  --freeze-backbone
+```
+
+Benchmark the prompt-conditioned dense delta head:
+
+```bash
+python scripts/benchmark_prompt_dense_delta.py \
+  --student-checkpoint /tmp/prompt_dense_delta/epoch-9 \
+  --cases benchmarks/sample_region_cases.json
+```
+
+This is the first faithful prompted-latent version in the repo:
+
+- prompt + query go into the tiny model
+- the tiny model predicts dense `minus/plus` deltas
+- the deltas are evaluated directly by positive/negative region behavior
+
 Benchmark region-style IN membership:
 
 ```bash
@@ -213,6 +237,8 @@ python scripts/benchmark_student_formula_region.py \
 - `scripts/eval_student_encoder.py`: clean held-out evaluation for the distilled student encoder
 - `scripts/prepare_pair_dataset.py`: prepare pair/triplet JSONL from stronger embedding datasets
 - `scripts/benchmark_direct_delta_region.py`: simplest anchored dense delta benchmark
+- `scripts/train_prompt_dense_delta.py`: train a prompt-conditioned dense delta head
+- `scripts/benchmark_prompt_dense_delta.py`: benchmark a prompt-conditioned dense delta head
 - `benchmarks/sample_region_cases.json`: sample IN/OUT benchmark cases
 - `scripts/benchmark_region_membership.py`: region-membership benchmark for query/positive/negative cases
 - `scripts/benchmark_formula_region.py`: formula-based region benchmark
