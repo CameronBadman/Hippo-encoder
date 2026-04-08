@@ -98,6 +98,21 @@ python -m hippo_encoder.train --config configs/tiny_llm_pair_reset.json
 
 The repo also contains region / delta / formula experiments. Those are exploratory and are not the primary reset architecture.
 
+Benchmark the simplest direct delta representation on top of a trained checkpoint:
+
+```bash
+python scripts/benchmark_direct_delta_region.py \
+  --cases benchmarks/sample_region_cases.json \
+  --student-checkpoint /path/to/checkpoint/epoch-2
+```
+
+This uses the simplest anchored representation:
+
+- derive dense `minus/plus` deltas from teacher positive spread
+- keep those deltas fixed
+- swap only the anchor from teacher to student
+- measure how well the student anchor preserves IN/OUT behavior
+
 Benchmark region-style IN membership:
 
 ```bash
@@ -197,6 +212,7 @@ python scripts/benchmark_student_formula_region.py \
 - `configs/tiny_llm_pair_reset.json`: reset config for pair/triplet distillation
 - `scripts/eval_student_encoder.py`: clean held-out evaluation for the distilled student encoder
 - `scripts/prepare_pair_dataset.py`: prepare pair/triplet JSONL from stronger embedding datasets
+- `scripts/benchmark_direct_delta_region.py`: simplest anchored dense delta benchmark
 - `benchmarks/sample_region_cases.json`: sample IN/OUT benchmark cases
 - `scripts/benchmark_region_membership.py`: region-membership benchmark for query/positive/negative cases
 - `scripts/benchmark_formula_region.py`: formula-based region benchmark

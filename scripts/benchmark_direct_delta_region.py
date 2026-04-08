@@ -1,0 +1,223 @@
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import torch
+import torch.nn.functional as F
+from transformers import AutoModel, AutoTokenizer
+
+
+def masked_mean(hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+    mask = attention_mask.unsqueeze(-1).float()
+    masked = hidden_states * mask
+    denom = mask.sum(dim=1).clamp(min=1.0)
+    return masked.sum(dim=1) / denom
+
+
+def inside_fraction(embeds: torch.Tensor, lower: torch.Tensor, upper: torch.Tensor) -> torch.Tensor:
+    inside = (embeds >= lower.unsqueeze(0)) & (embeds <= upper.unsqueeze(0))
+    return inside.float().mean(dim=-1)
+
+
+def soft_box_distance(embeds: torch.Tensor, lower: torch.Tensor, upper: torch.Tensor) -> torch.Tensor:
+    below = torch.relu(lower.unsqueeze(0) - embeds)
+    above = torch.relu(embeds - upper.unsqueeze(0))
+    return (below + above).mean(dim=-1)
+
+
+class TeacherEncoder:
+    def __init__(self, model_name: str, device: torch.device, max_length: int):
+        self.device = device
+        self.max_length = max_length
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained(model_name).to(device).eval()
+
+    @torch.no_grad()
+    def encode(self, texts: list[str]) -> torch.Tensor:
+        batch = self.tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt",
+        )
+        batch = {name: tensor.to(self.device) for name, tensor in batch.items()}
+        outputs = self.model(**batch, return_dict=True)
+        embeds = masked_mean(outputs.last_hidden_state, batch["attention_mask"])
+        return F.normalize(embeds, dim=-1)
+
+
+class StudentEncoder:
+    def __init__(self, checkpoint_dir: str | Path, device: torch.device, max_length: int):
+        checkpoint_dir = Path(checkpoint_dir)
+        self.device = device
+        self.max_length = max_length
+        self.tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir / "tokenizer")
+        self.backbone = AutoModel.from_pretrained(checkpoint_dir / "backbone").to(device).eval()
+        heads = torch.load(checkpoint_dir / "heads.pt", map_location=device)
+
+        target_dim = heads["embed_head"]["weight"].shape[0]
+        self.embed_head = torch.nn.Linear(self.backbone.config.hidden_size, target_dim).to(device)
+        self.embed_head.load_state_dict(heads["embed_head"])
+        self.embed_head.eval()
+
+    @torch.no_grad()
+    def encode(self, texts: list[str]) -> torch.Tensor:
+        batch = self.tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt",
+        )
+        batch = {name: tensor.to(self.device) for name, tensor in batch.items()}
+        outputs = self.backbone(**batch, return_dict=True)
+        pooled = masked_mean(outputs.last_hidden_state, batch["attention_mask"])
+        embeds = self.embed_head(pooled)
+        return F.normalize(embeds, dim=-1)
+
+
+def build_dense_region(
+    anchor: torch.Tensor,
+    positives: torch.Tensor,
+    radius_scale: float,
+    min_radius: float,
+    global_margin: float,
+) -> dict[str, torch.Tensor]:
+    deltas = positives - anchor.unsqueeze(0)
+    minus = torch.clamp((-deltas).max(dim=0).values * radius_scale + global_margin, min=min_radius)
+    plus = torch.clamp(deltas.max(dim=0).values * radius_scale + global_margin, min=min_radius)
+    return {
+        "minus": minus,
+        "plus": plus,
+        "lower": anchor - minus,
+        "upper": anchor + plus,
+    }
+
+
+def evaluate_case(
+    case: dict,
+    teacher: TeacherEncoder,
+    student: StudentEncoder,
+    inside_threshold: float,
+    radius_scale: float,
+    min_radius: float,
+    global_margin: float,
+) -> dict:
+    query = case["query"]
+    positives = case["positives"]
+    negatives = case["negatives"]
+
+    teacher_query = teacher.encode([query])[0]
+    student_query = student.encode([query])[0]
+    teacher_positives = teacher.encode(positives)
+    teacher_negatives = teacher.encode(negatives)
+
+    teacher_region = build_dense_region(
+        anchor=teacher_query,
+        positives=teacher_positives,
+        radius_scale=radius_scale,
+        min_radius=min_radius,
+        global_margin=global_margin,
+    )
+    student_region = {
+        "minus": teacher_region["minus"],
+        "plus": teacher_region["plus"],
+        "lower": student_query - teacher_region["minus"],
+        "upper": student_query + teacher_region["plus"],
+    }
+
+    teacher_pos_frac = inside_fraction(teacher_positives, teacher_region["lower"], teacher_region["upper"])
+    teacher_neg_frac = inside_fraction(teacher_negatives, teacher_region["lower"], teacher_region["upper"])
+    student_pos_frac = inside_fraction(teacher_positives, student_region["lower"], student_region["upper"])
+    student_neg_frac = inside_fraction(teacher_negatives, student_region["lower"], student_region["upper"])
+
+    student_teacher_cos = F.cosine_similarity(student_query.unsqueeze(0), teacher_query.unsqueeze(0), dim=-1).item()
+
+    return {
+        "query": query,
+        "student_teacher_cosine": student_teacher_cos,
+        "teacher_positive_hit_rate": (teacher_pos_frac >= inside_threshold).float().mean().item(),
+        "teacher_negative_false_positive_rate": (teacher_neg_frac >= inside_threshold).float().mean().item(),
+        "student_positive_hit_rate": (student_pos_frac >= inside_threshold).float().mean().item(),
+        "student_negative_false_positive_rate": (student_neg_frac >= inside_threshold).float().mean().item(),
+        "teacher_positive_inside_fraction_mean": teacher_pos_frac.mean().item(),
+        "teacher_negative_inside_fraction_mean": teacher_neg_frac.mean().item(),
+        "student_positive_inside_fraction_mean": student_pos_frac.mean().item(),
+        "student_negative_inside_fraction_mean": student_neg_frac.mean().item(),
+        "teacher_positive_soft_distance_mean": soft_box_distance(
+            teacher_positives, teacher_region["lower"], teacher_region["upper"]
+        ).mean().item(),
+        "teacher_negative_soft_distance_mean": soft_box_distance(
+            teacher_negatives, teacher_region["lower"], teacher_region["upper"]
+        ).mean().item(),
+        "student_positive_soft_distance_mean": soft_box_distance(
+            teacher_positives, student_region["lower"], student_region["upper"]
+        ).mean().item(),
+        "student_negative_soft_distance_mean": soft_box_distance(
+            teacher_negatives, student_region["lower"], student_region["upper"]
+        ).mean().item(),
+        "mean_minus": teacher_region["minus"].mean().item(),
+        "mean_plus": teacher_region["plus"].mean().item(),
+    }
+
+
+def summarize(results: list[dict]) -> dict:
+    keys = [
+        "student_teacher_cosine",
+        "teacher_positive_hit_rate",
+        "teacher_negative_false_positive_rate",
+        "student_positive_hit_rate",
+        "student_negative_false_positive_rate",
+        "teacher_positive_inside_fraction_mean",
+        "teacher_negative_inside_fraction_mean",
+        "student_positive_inside_fraction_mean",
+        "student_negative_inside_fraction_mean",
+        "teacher_positive_soft_distance_mean",
+        "teacher_negative_soft_distance_mean",
+        "student_positive_soft_distance_mean",
+        "student_negative_soft_distance_mean",
+        "mean_minus",
+        "mean_plus",
+    ]
+    return {key: sum(result[key] for result in results) / len(results) for key in keys}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Benchmark direct dense minus/plus deltas around the anchor.")
+    parser.add_argument("--cases", required=True)
+    parser.add_argument("--teacher-model", default="intfloat/e5-base-v2")
+    parser.add_argument("--student-checkpoint", required=True)
+    parser.add_argument("--max-length", type=int, default=64)
+    parser.add_argument("--inside-threshold", type=float, default=0.9)
+    parser.add_argument("--radius-scale", type=float, default=1.0)
+    parser.add_argument("--min-radius", type=float, default=0.01)
+    parser.add_argument("--global-margin", type=float, default=0.0)
+    args = parser.parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    with open(args.cases, "r", encoding="utf-8") as handle:
+        cases = json.load(handle)
+
+    teacher = TeacherEncoder(args.teacher_model, device=device, max_length=args.max_length)
+    student = StudentEncoder(args.student_checkpoint, device=device, max_length=args.max_length)
+
+    results = [
+        evaluate_case(
+            case=case,
+            teacher=teacher,
+            student=student,
+            inside_threshold=args.inside_threshold,
+            radius_scale=args.radius_scale,
+            min_radius=args.min_radius,
+            global_margin=args.global_margin,
+        )
+        for case in cases
+    ]
+    print(json.dumps({"summary": summarize(results), "cases": results}, indent=2))
+
+
+if __name__ == "__main__":
+    main()
