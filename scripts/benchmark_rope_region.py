@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
 
-from hippo_encoder.rope_region import DualRopePointProgram, inside_fraction, soft_box_distance
+from hippo_encoder.rope_region import DualRopePointProgram, DualRopeShapeProgram, inside_fraction, soft_box_distance
 from hippo_encoder.student import TinyEncoderStudent
 
 
@@ -62,6 +62,7 @@ def evaluate_case(
     radius_scale: float,
     min_radius: float,
     terms_per_side: int,
+    program_type: str,
 ) -> dict:
     query = case["query"]
     positives = case["positives"]
@@ -72,13 +73,24 @@ def evaluate_case(
     teacher_positives = teacher.encode(positives)
     teacher_negatives = teacher.encode(negatives)
 
-    program = DualRopePointProgram.from_teacher_spread(
-        anchor=teacher_query,
-        positives=teacher_positives,
-        terms_per_side=terms_per_side,
-        base_radius=min_radius,
-        radius_scale=radius_scale,
-    )
+    if program_type == "point":
+        program = DualRopePointProgram.from_teacher_spread(
+            anchor=teacher_query,
+            positives=teacher_positives,
+            terms_per_side=terms_per_side,
+            base_radius=min_radius,
+            radius_scale=radius_scale,
+        )
+    elif program_type == "shape":
+        program = DualRopeShapeProgram.from_teacher_spread(
+            anchor=teacher_query,
+            positives=teacher_positives,
+            terms_per_side=terms_per_side,
+            base_radius=min_radius,
+            radius_scale=radius_scale,
+        )
+    else:
+        raise ValueError(f"Unsupported program type: {program_type}")
     teacher_region = program.hydrate(teacher_query)
     student_region = program.hydrate(student_query)
 
@@ -141,7 +153,7 @@ def summarize(results: list[dict]) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Benchmark dual-rope point region programs across term budgets.")
+    parser = argparse.ArgumentParser(description="Benchmark dual-rope region programs across term budgets.")
     parser.add_argument("--cases", required=True)
     parser.add_argument("--teacher-model", default="intfloat/e5-base-v2")
     parser.add_argument("--student-checkpoint", required=True)
@@ -150,6 +162,7 @@ def main() -> None:
     parser.add_argument("--radius-scale", type=float, default=1.0)
     parser.add_argument("--min-radius", type=float, default=0.01)
     parser.add_argument("--budgets", type=int, nargs="+", default=[16, 32, 64, 128])
+    parser.add_argument("--program-type", choices=("point", "shape"), default="point")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -170,6 +183,7 @@ def main() -> None:
                 radius_scale=args.radius_scale,
                 min_radius=args.min_radius,
                 terms_per_side=budget,
+                program_type=args.program_type,
             )
             for case in cases
         ]

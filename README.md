@@ -180,6 +180,7 @@ Benchmark a dual-rope point region program across budgets:
 python scripts/benchmark_rope_region.py \
   --cases benchmarks/sample_region_cases.json \
   --student-checkpoint /path/to/checkpoint/epoch-2 \
+  --program-type shape \
   --budgets 16 32 64 128
 ```
 
@@ -190,7 +191,7 @@ This maps dimensions onto two deterministic ropes. Each region op is:
 - `rope` (`0` or `1`)
 - `value`
 
-and the program applies exact point updates on that two-rope layout. The benchmark reports how teacher/student behavior changes as the term budget increases.
+and the program applies either exact point updates or small local shapes on that two-rope layout. The benchmark reports how teacher/student behavior changes as the term budget increases.
 
 Benchmark a ranged formula-based region program:
 
