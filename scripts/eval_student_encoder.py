@@ -35,6 +35,10 @@ DEFAULT_PARAPHRASE_PAIRS = [
 ]
 
 
+def pair_key(left: int, right: int) -> tuple[int, int]:
+    return (left, right) if left < right else (right, left)
+
+
 def masked_mean(hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
     mask = attention_mask.unsqueeze(-1).float()
     masked = hidden_states * mask
@@ -89,6 +93,39 @@ def load_eval_texts(path: str | None) -> list[str]:
     return payload
 
 
+def collect_pair_stats(
+    similarity: torch.Tensor,
+    paraphrase_pairs: list[tuple[int, int, str]],
+    num_texts: int,
+) -> dict[str, float]:
+    paraphrase_keys = {
+        pair_key(left, right)
+        for left, right, _label in paraphrase_pairs
+        if left < num_texts and right < num_texts
+    }
+
+    paraphrase_values = []
+    non_paraphrase_values = []
+    for left in range(num_texts):
+        for right in range(left + 1, num_texts):
+            value = float(similarity[left, right].item())
+            if pair_key(left, right) in paraphrase_keys:
+                paraphrase_values.append(value)
+            else:
+                non_paraphrase_values.append(value)
+
+    paraphrase_mean = sum(paraphrase_values) / max(1, len(paraphrase_values))
+    non_paraphrase_mean = sum(non_paraphrase_values) / max(1, len(non_paraphrase_values))
+
+    return {
+        "paraphrase_mean": paraphrase_mean,
+        "non_paraphrase_mean": non_paraphrase_mean,
+        "paraphrase_margin": paraphrase_mean - non_paraphrase_mean,
+        "max_non_paraphrase": max(non_paraphrase_values) if non_paraphrase_values else 0.0,
+        "min_paraphrase": min(paraphrase_values) if paraphrase_values else 0.0,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate a distilled tiny LLM encoder against the teacher encoder.")
     parser.add_argument("--student-checkpoint", required=True)
@@ -133,12 +170,27 @@ def main() -> None:
             }
         )
 
+    valid_paraphrase_pairs = [
+        (left, right, label)
+        for left, right, label in DEFAULT_PARAPHRASE_PAIRS
+        if right < len(texts)
+    ]
+    teacher_pair_stats = collect_pair_stats(teacher_sim, valid_paraphrase_pairs, len(texts))
+    student_pair_stats = collect_pair_stats(student_sim, valid_paraphrase_pairs, len(texts))
+
     print(
         json.dumps(
             {
                 "summary": {
                     "mean_teacher_student_cosine": pair_cos.mean().item(),
                     "mean_topk_overlap": sum(neighbor_overlap) / len(neighbor_overlap),
+                    "teacher_paraphrase_mean": teacher_pair_stats["paraphrase_mean"],
+                    "teacher_non_paraphrase_mean": teacher_pair_stats["non_paraphrase_mean"],
+                    "teacher_paraphrase_margin": teacher_pair_stats["paraphrase_margin"],
+                    "student_paraphrase_mean": student_pair_stats["paraphrase_mean"],
+                    "student_non_paraphrase_mean": student_pair_stats["non_paraphrase_mean"],
+                    "student_paraphrase_margin": student_pair_stats["paraphrase_margin"],
+                    "student_collapse_gap": student_pair_stats["min_paraphrase"] - student_pair_stats["max_non_paraphrase"],
                     "num_texts": len(texts),
                     "top_k": args.top_k,
                 },
@@ -147,6 +199,10 @@ def main() -> None:
                     for text, score in zip(texts, pair_cos.tolist())
                 ],
                 "paraphrase_similarity": paraphrase_scores,
+                "pair_stats": {
+                    "teacher": teacher_pair_stats,
+                    "student": student_pair_stats,
+                },
             },
             indent=2,
         )
