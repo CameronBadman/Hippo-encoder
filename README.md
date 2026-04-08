@@ -47,6 +47,17 @@ python scripts/prepare_text_dataset.py \
   --output data/train.jsonl
 ```
 
+Build region-training cases from a text JSONL file:
+
+```bash
+python scripts/prepare_region_cases.py \
+  --input-jsonl data/train.jsonl \
+  --output data/region_cases.json \
+  --num-cases 2000
+```
+
+This embeds the text rows with the teacher, picks near neighbors as positives, and samples hard plus easy negatives to produce `query / positives / negatives` supervision for the formula head.
+
 For Google Colab, use [Hippo_Encoder_Colab.ipynb](/home/cameron/projects/Hippo-encoder/Hippo_Encoder_Colab.ipynb).
 
 Benchmark region-style IN membership:
@@ -144,6 +155,7 @@ python scripts/benchmark_student_formula_region.py \
 - `scripts/benchmark_group_region.py`: grouped anchor-preserving region benchmark
 - `scripts/benchmark_region_program_size.py`: dense-vs-sparse program size benchmark
 - `scripts/prepare_text_dataset.py`: download and export public text data to JSONL
+- `scripts/prepare_region_cases.py`: build region training cases from text JSONL via teacher-space neighbors
 - `prompts/ranged_formula_region_prompt.md`: prompt/spec for direct ranged-formula program generation
 - `src/hippo_encoder/formula_region.py`: compact formula-based plus/minus region program
 - `src/hippo_encoder/group_region.py`: grouped two-array region program
