@@ -685,6 +685,9 @@ def _fit_rope_formula_terms(
             residual = residual - term_grid
             residual = torch.round(residual / quantize_step) * quantize_step
             terms_out.append(term)
+            remaining = torch.abs(residual[valid]).max().item() if bool(valid.any()) else 0.0
+            if remaining < change_threshold:
+                break
             if len(terms_out) >= terms:
                 break
         if len(terms_out) >= terms:
@@ -698,72 +701,81 @@ def _best_formula_term(
     target: str,
     rope: int,
 ) -> tuple[RopeFormulaTerm | None, torch.Tensor | None]:
-    scores = torch.abs(torch.where(valid, residual, torch.zeros_like(residual)))
-    best_index = torch.argmax(scores)
-    cy = float((best_index // residual.shape[1]).item())
-    cx = float((best_index % residual.shape[1]).item())
-    amp0 = float(residual[int(cy), int(cx)].item())
-    if abs(amp0) < 1e-8:
-        return None, None
-
-    candidates: list[RopeFormulaTerm] = []
-    for sx in (0.75, 1.5, 3.0):
-        for sy in (0.75, 1.5, 3.0):
-            candidates.append(
-                RopeFormulaTerm(
-                    target=target,
-                    rope=rope,
-                    term_type="gaussian",
-                    cx=cx,
-                    cy=cy,
-                    amp=amp0,
-                    sx=sx,
-                    sy=sy,
-                    support_radius_x=max(1.5, 3.0 * sx),
-                    support_radius_y=max(1.5, 3.0 * sy),
-                )
-            )
-    for sx in (0.75, 1.5, 3.0):
-        candidates.append(
-            RopeFormulaTerm(
-                target=target,
-                rope=rope,
-                term_type="ridge_x",
-                cx=cx,
-                cy=cy,
-                amp=amp0,
-                sx=sx,
-                sy=1.0,
-                support_radius_x=max(1.5, 3.0 * sx),
-                support_radius_y=2.0,
-            )
-        )
-    for sy in (0.75, 1.5, 3.0):
-        candidates.append(
-            RopeFormulaTerm(
-                target=target,
-                rope=rope,
-                term_type="ridge_y",
-                cx=cx,
-                cy=cy,
-                amp=amp0,
-                sx=1.0,
-                sy=sy,
-                support_radius_x=2.0,
-                support_radius_y=max(1.5, 3.0 * sy),
-            )
-        )
-
     ys, xs = torch.meshgrid(
         torch.arange(residual.shape[0], dtype=residual.dtype, device=residual.device),
         torch.arange(residual.shape[1], dtype=residual.dtype, device=residual.device),
         indexing="ij",
     )
+    score_grid = torch.abs(torch.where(valid, residual, torch.zeros_like(residual)))
+    active = torch.nonzero(valid, as_tuple=False)
+    if active.numel() == 0:
+        return None, None
+    flat_scores = score_grid[valid]
+    topk = min(8, flat_scores.numel())
+    _, anchor_order = torch.topk(flat_scores, k=topk, largest=True)
+
+    candidates: list[RopeFormulaTerm] = []
+    for order_idx in anchor_order.tolist():
+        y_idx, x_idx = active[order_idx].tolist()
+        cx = float(x_idx)
+        cy = float(y_idx)
+        amp0 = float(residual[y_idx, x_idx].item())
+        if abs(amp0) < 1e-8:
+            continue
+        for sx in (0.5, 0.75, 1.5, 3.0, 6.0):
+            for sy in (0.5, 0.75, 1.5, 3.0, 6.0):
+                candidates.append(
+                    RopeFormulaTerm(
+                        target=target,
+                        rope=rope,
+                        term_type="gaussian",
+                        cx=cx,
+                        cy=cy,
+                        amp=amp0,
+                        sx=sx,
+                        sy=sy,
+                        support_radius_x=max(1.5, 3.0 * sx),
+                        support_radius_y=max(1.5, 3.0 * sy),
+                    )
+                )
+        for sx in (0.5, 0.75, 1.5, 3.0, 6.0):
+            candidates.append(
+                RopeFormulaTerm(
+                    target=target,
+                    rope=rope,
+                    term_type="ridge_x",
+                    cx=cx,
+                    cy=cy,
+                    amp=amp0,
+                    sx=sx,
+                    sy=1.0,
+                    support_radius_x=max(1.5, 3.0 * sx),
+                    support_radius_y=2.0,
+                )
+            )
+        for sy in (0.5, 0.75, 1.5, 3.0, 6.0):
+            candidates.append(
+                RopeFormulaTerm(
+                    target=target,
+                    rope=rope,
+                    term_type="ridge_y",
+                    cx=cx,
+                    cy=cy,
+                    amp=amp0,
+                    sx=1.0,
+                    sy=sy,
+                    support_radius_x=2.0,
+                    support_radius_y=max(1.5, 3.0 * sy),
+                )
+            )
+    if not candidates:
+        return None, None
+
     best_score = -1.0
     best_term: RopeFormulaTerm | None = None
     best_values: torch.Tensor | None = None
     valid_vals = residual[valid]
-    valid_mean_abs = float(torch.abs(valid_vals).mean().item()) if valid_vals.numel() else 0.0
+    baseline_error = float((valid_vals * valid_vals).sum().item()) + 1e-8
     for term in candidates:
         values = _formula_values(term, xs, ys)
         masked_values = values[valid]
@@ -772,6 +784,8 @@ def _best_formula_term(
         numer = float((valid_vals * masked_values).sum().item())
         denom = float((masked_values * masked_values).sum().item()) + 1e-8
         amp = numer / denom
+        if abs(amp) < 1e-8:
+            continue
         trial = RopeFormulaTerm(
             target=term.target,
             rope=term.rope,
@@ -785,26 +799,36 @@ def _best_formula_term(
             support_radius_y=term.support_radius_y,
         )
         fitted = _formula_values(trial, xs, ys)
-        score = float(torch.abs((valid_vals * fitted[valid]).sum()).item()) / (valid_mean_abs + 1e-8)
+        residual_after = valid_vals - fitted[valid]
+        error_after = float((residual_after * residual_after).sum().item())
+        score = baseline_error - error_after
         if score > best_score:
             best_score = score
             best_term = trial
             best_values = fitted[valid]
+    if best_score <= 1e-8:
+        return None, None
     return best_term, best_values
 
 
 def _formula_values(term: RopeFormulaTerm, xs: torch.Tensor, ys: torch.Tensor) -> torch.Tensor:
     if term.term_type == "gaussian":
-        return term.amp * torch.exp(
+        values = term.amp * torch.exp(
             -0.5 * (((xs - term.cx) / max(term.sx, 1e-4)) ** 2 + ((ys - term.cy) / max(term.sy, 1e-4)) ** 2)
         )
-    if term.term_type == "ridge_x":
-        return term.amp * torch.exp(-0.5 * (((xs - term.cx) / max(term.sx, 1e-4)) ** 2))
-    if term.term_type == "ridge_y":
-        return term.amp * torch.exp(-0.5 * (((ys - term.cy) / max(term.sy, 1e-4)) ** 2))
-    if term.term_type == "const":
-        return torch.full_like(xs, term.amp)
-    raise ValueError(f"Unsupported formula term type: {term.term_type}")
+    elif term.term_type == "ridge_x":
+        values = term.amp * torch.exp(-0.5 * (((xs - term.cx) / max(term.sx, 1e-4)) ** 2))
+    elif term.term_type == "ridge_y":
+        values = term.amp * torch.exp(-0.5 * (((ys - term.cy) / max(term.sy, 1e-4)) ** 2))
+    elif term.term_type == "const":
+        values = torch.full_like(xs, term.amp)
+    else:
+        raise ValueError(f"Unsupported formula term type: {term.term_type}")
+    if term.support_radius_x is not None:
+        values = values * (torch.abs(xs - term.cx) <= term.support_radius_x)
+    if term.support_radius_y is not None:
+        values = values * (torch.abs(ys - term.cy) <= term.support_radius_y)
+    return values
 
 
 def _best_shape_op(
