@@ -39,7 +39,7 @@ Run training:
 python -m hippo_encoder.train --config configs/tiny_llm_reset.json
 ```
 
-Bootstrap a few thousand public text rows from Hugging Face:
+Bootstrap a few thousand plain text rows from Hugging Face:
 
 ```bash
 python scripts/prepare_text_dataset.py \
@@ -72,6 +72,27 @@ python scripts/eval_student_encoder.py \
 ```
 
 This reports teacher-student cosine agreement, nearest-neighbor overlap, and a few paraphrase checks.
+
+For a stronger training signal than `ag_news`, build pair/triplet supervision:
+
+```bash
+python scripts/prepare_pair_dataset.py \
+  --source msmarco_triplet \
+  --limit 50000 \
+  --output data/train_pairs.jsonl
+```
+
+Supported sources:
+
+- `msmarco_triplet`: retrieval-style query/positive/negative supervision
+- `all_nli_pair`: semantic pair supervision
+- `all_nli_triplet`: semantic triplet supervision
+
+Then train with the pair-aware reset config:
+
+```bash
+python -m hippo_encoder.train --config configs/tiny_llm_pair_reset.json
+```
 
 ## Experimental Region Work
 
@@ -172,8 +193,10 @@ python scripts/benchmark_student_formula_region.py \
 
 ## Repo Layout
 
-- `configs/tiny_llm_reset.json`: reset config for the original tiny-LLM-to-teacher setup
+- `configs/tiny_llm_reset.json`: reset config for plain text distillation
+- `configs/tiny_llm_pair_reset.json`: reset config for pair/triplet distillation
 - `scripts/eval_student_encoder.py`: clean held-out evaluation for the distilled student encoder
+- `scripts/prepare_pair_dataset.py`: prepare pair/triplet JSONL from stronger embedding datasets
 - `benchmarks/sample_region_cases.json`: sample IN/OUT benchmark cases
 - `scripts/benchmark_region_membership.py`: region-membership benchmark for query/positive/negative cases
 - `scripts/benchmark_formula_region.py`: formula-based region benchmark
@@ -199,6 +222,7 @@ python scripts/benchmark_student_formula_region.py \
 
 Useful upgrades from the reset path:
 
+- use pair/triplet supervision instead of generic plain text whenever possible
 - compare `BAAI/bge-small-en-v1.5` against other small students
 - add richer teacher targets from intermediate layers instead of only pooled outputs
 - expand held-out evaluation coverage and retrieval diagnostics

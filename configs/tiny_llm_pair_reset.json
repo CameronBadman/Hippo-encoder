@@ -1,0 +1,22 @@
+{
+  "teacher_model_name": "intfloat/e5-base-v2",
+  "student_model_name": "BAAI/bge-small-en-v1.5",
+  "dataset_jsonl": "data/train_pairs.jsonl",
+  "output_dir": "runs/distill-bge-small-pairs",
+  "max_text_length": 64,
+  "batch_size": 32,
+  "num_epochs": 3,
+  "learning_rate": 0.0001,
+  "weight_decay": 0.01,
+  "log_every": 20,
+  "save_every": 100000,
+  "num_workers": 2,
+  "teacher_text_weight": 1.0,
+  "hidden_state_weight": 0.2,
+  "contrastive_weight": 0.4,
+  "contrastive_temperature": 0.07,
+  "normalize_targets": true,
+  "gradient_clip_norm": 1.0,
+  "warmup_steps": 100,
+  "seed": 42
+}

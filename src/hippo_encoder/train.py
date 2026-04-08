@@ -11,8 +11,8 @@ from torch.utils.data import DataLoader
 from transformers import get_linear_schedule_with_warmup
 
 from hippo_encoder.config import DistillConfig
-from hippo_encoder.data import TextJsonlDataset
-from hippo_encoder.losses import text_distillation_loss
+from hippo_encoder.data import DistillJsonlDataset
+from hippo_encoder.losses import pair_distillation_loss, text_distillation_loss
 from hippo_encoder.student import TinyEncoderStudent
 from hippo_encoder.teacher import TextTeacher
 
@@ -24,9 +24,17 @@ def seed_everything(seed: int) -> None:
 
 
 def collate_fn(rows: list[dict]) -> dict:
-    return {
-        "texts": [row["text"] for row in rows],
+    if "text" in rows[0]:
+        return {"schema": "text", "texts": [row["text"] for row in rows]}
+
+    batch = {
+        "schema": "pair",
+        "anchors": [row["anchor"] for row in rows],
+        "positives": [row["positive"] for row in rows],
     }
+    if all("negative" in row for row in rows):
+        batch["negatives"] = [row["negative"] for row in rows]
+    return batch
 
 
 def train(config: DistillConfig) -> None:
@@ -35,7 +43,7 @@ def train(config: DistillConfig) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dataset = TextJsonlDataset(config.dataset_jsonl)
+    dataset = DistillJsonlDataset(config.dataset_jsonl)
     loader = DataLoader(
         dataset,
         batch_size=config.batch_size,
@@ -67,25 +75,59 @@ def train(config: DistillConfig) -> None:
     for epoch in range(config.num_epochs):
         student.train()
         for batch in loader:
-            teacher_outputs = teacher.encode(
-                texts=batch["texts"],
-                device=device,
-                max_length=config.max_text_length,
-                normalize=config.normalize_targets,
-            )
-            student_outputs = student(
-                texts=batch["texts"],
-                device=device,
-                max_length=config.max_text_length,
-            )
-            loss, metrics = text_distillation_loss(
-                student_outputs=student_outputs,
-                teacher_outputs=teacher_outputs,
-                teacher_text_weight=config.teacher_text_weight,
-                hidden_state_weight=config.hidden_state_weight,
-                contrastive_weight=config.contrastive_weight,
-                contrastive_temperature=config.contrastive_temperature,
-            )
+            if batch["schema"] == "text":
+                teacher_outputs = teacher.encode(
+                    texts=batch["texts"],
+                    device=device,
+                    max_length=config.max_text_length,
+                    normalize=config.normalize_targets,
+                )
+                student_outputs = student(
+                    texts=batch["texts"],
+                    device=device,
+                    max_length=config.max_text_length,
+                )
+                loss, metrics = text_distillation_loss(
+                    student_outputs=student_outputs,
+                    teacher_outputs=teacher_outputs,
+                    teacher_text_weight=config.teacher_text_weight,
+                    hidden_state_weight=config.hidden_state_weight,
+                    contrastive_weight=config.contrastive_weight,
+                    contrastive_temperature=config.contrastive_temperature,
+                )
+            else:
+                anchor_teacher = teacher.encode(
+                    texts=batch["anchors"],
+                    device=device,
+                    max_length=config.max_text_length,
+                    normalize=config.normalize_targets,
+                )
+                positive_teacher = teacher.encode(
+                    texts=batch["positives"],
+                    device=device,
+                    max_length=config.max_text_length,
+                    normalize=config.normalize_targets,
+                )
+                anchor_student = student(
+                    texts=batch["anchors"],
+                    device=device,
+                    max_length=config.max_text_length,
+                )
+                positive_student = student(
+                    texts=batch["positives"],
+                    device=device,
+                    max_length=config.max_text_length,
+                )
+                loss, metrics = pair_distillation_loss(
+                    anchor_student=anchor_student,
+                    positive_student=positive_student,
+                    anchor_teacher=anchor_teacher,
+                    positive_teacher=positive_teacher,
+                    teacher_text_weight=config.teacher_text_weight,
+                    hidden_state_weight=config.hidden_state_weight,
+                    contrastive_weight=config.contrastive_weight,
+                    contrastive_temperature=config.contrastive_temperature,
+                )
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
