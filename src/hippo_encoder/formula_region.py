@@ -344,13 +344,19 @@ def soft_box_distance(embeds: torch.Tensor, lower: torch.Tensor, upper: torch.Te
 
 
 def extract_json_object(text: str) -> dict:
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("No JSON object found in generated text.")
     import json
 
-    return json.loads(text[start : end + 1])
+    decoder = json.JSONDecoder()
+    for start, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    raise ValueError("No valid JSON object found in generated text.")
 
 
 def _parse_generated_terms(items: list[dict], dimensions: int, target_name: str) -> list[RangedFormulaTerm]:
