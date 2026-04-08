@@ -179,6 +179,7 @@ def main() -> None:
     parser.add_argument("--num-epochs", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--warmup-steps", type=int, default=20)
+    parser.add_argument("--save-every-epochs", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--freeze-backbone", action="store_true")
     args = parser.parse_args()
@@ -263,7 +264,9 @@ def main() -> None:
                     f"plus_active={metrics['plus_active_loss']:.4f}"
                 )
 
-        save_checkpoint(output_dir / f"epoch-{epoch}", student, args.formula_terms_per_side)
+        should_save = ((epoch + 1) % max(1, args.save_every_epochs) == 0) or (epoch == args.num_epochs - 1)
+        if should_save:
+            save_checkpoint(output_dir / f"epoch-{epoch}", student, args.formula_terms_per_side)
 
 
 if __name__ == "__main__":
