@@ -105,6 +105,12 @@ def evaluate_case(
         )
     else:
         raise ValueError(f"Unsupported program type: {program_type}")
+
+    minus_items = getattr(program, "minus_ops", None)
+    plus_items = getattr(program, "plus_ops", None)
+    if minus_items is None or plus_items is None:
+        minus_items = getattr(program, "minus_terms")
+        plus_items = getattr(program, "plus_terms")
     teacher_region = program.hydrate(teacher_query)
     student_region = program.hydrate(student_query)
 
@@ -115,8 +121,8 @@ def evaluate_case(
 
     return {
         "query": query,
-        "minus_point_count": len(program.minus_ops),
-        "plus_point_count": len(program.plus_ops),
+        "minus_point_count": len(minus_items),
+        "plus_point_count": len(plus_items),
         "student_teacher_cosine": F.cosine_similarity(
             student_query.unsqueeze(0),
             teacher_query.unsqueeze(0),
