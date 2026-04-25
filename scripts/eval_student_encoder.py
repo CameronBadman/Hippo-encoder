@@ -83,14 +83,32 @@ def topk_neighbors(similarity: torch.Tensor, k: int) -> torch.Tensor:
     return indices[:, 1:]
 
 
-def load_eval_texts(path: str | None) -> list[str]:
+def load_eval_suite(path: str | None) -> tuple[list[str], list[tuple[int, int, str]]]:
     if path is None:
-        return DEFAULT_EVAL_TEXTS
+        return DEFAULT_EVAL_TEXTS, DEFAULT_PARAPHRASE_PAIRS
     with open(path, "r", encoding="utf-8") as handle:
         payload = json.load(handle)
-    if not isinstance(payload, list) or not all(isinstance(item, str) for item in payload):
-        raise ValueError("Eval text file must be a JSON list of strings.")
-    return payload
+    if isinstance(payload, list) and all(isinstance(item, str) for item in payload):
+        return payload, DEFAULT_PARAPHRASE_PAIRS
+    if not isinstance(payload, dict):
+        raise ValueError("Eval file must be a JSON list of strings or an object with `texts`.")
+
+    texts = payload.get("texts")
+    if not isinstance(texts, list) or not all(isinstance(item, str) for item in texts):
+        raise ValueError("Eval suite `texts` must be a JSON list of strings.")
+
+    paraphrase_pairs = []
+    for item in payload.get("paraphrase_pairs", []):
+        if (
+            not isinstance(item, list)
+            or len(item) != 3
+            or not isinstance(item[0], int)
+            or not isinstance(item[1], int)
+            or not isinstance(item[2], str)
+        ):
+            raise ValueError("Each paraphrase pair must be [left_index, right_index, label].")
+        paraphrase_pairs.append((item[0], item[1], item[2]))
+    return texts, paraphrase_pairs
 
 
 def collect_pair_stats(
@@ -136,7 +154,7 @@ def main() -> None:
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    texts = load_eval_texts(args.texts_file)
+    texts, paraphrase_pairs = load_eval_suite(args.texts_file)
 
     teacher_tokenizer = AutoTokenizer.from_pretrained(args.teacher_model)
     teacher_model = AutoModel.from_pretrained(args.teacher_model).to(device).eval()
@@ -159,7 +177,7 @@ def main() -> None:
         neighbor_overlap.append(len(teacher_set & student_set) / max(1, len(teacher_set)))
 
     paraphrase_scores = []
-    for left, right, label in DEFAULT_PARAPHRASE_PAIRS:
+    for left, right, label in paraphrase_pairs:
         if right >= len(texts):
             continue
         paraphrase_scores.append(
@@ -172,7 +190,7 @@ def main() -> None:
 
     valid_paraphrase_pairs = [
         (left, right, label)
-        for left, right, label in DEFAULT_PARAPHRASE_PAIRS
+        for left, right, label in paraphrase_pairs
         if right < len(texts)
     ]
     teacher_pair_stats = collect_pair_stats(teacher_sim, valid_paraphrase_pairs, len(texts))
