@@ -23,6 +23,8 @@ class DistillConfig:
     hidden_state_weight: float = 0.2
     contrastive_weight: float = 0.2
     contrastive_temperature: float = 0.07
+    triplet_weight: float = 0.0
+    triplet_margin: float = 0.2
     normalize_targets: bool = True
     gradient_clip_norm: float = 1.0
     warmup_steps: int = 100

@@ -97,3 +97,88 @@ def pair_distillation_loss(
         "contrastive_loss": contrastive_loss.detach().item(),
     }
     return total, metrics
+
+
+def triplet_distillation_loss(
+    anchor_student: dict,
+    positive_student: dict,
+    negative_student: dict,
+    anchor_teacher: dict,
+    positive_teacher: dict,
+    negative_teacher: dict,
+    teacher_text_weight: float,
+    hidden_state_weight: float,
+    contrastive_weight: float,
+    contrastive_temperature: float,
+    triplet_weight: float,
+    triplet_margin: float,
+) -> tuple[torch.Tensor, dict]:
+    anchor_text_loss = 1.0 - F.cosine_similarity(
+        anchor_student["projected_embeds"],
+        anchor_teacher["text_embeds"],
+        dim=-1,
+    ).mean()
+    positive_text_loss = 1.0 - F.cosine_similarity(
+        positive_student["projected_embeds"],
+        positive_teacher["text_embeds"],
+        dim=-1,
+    ).mean()
+    negative_text_loss = 1.0 - F.cosine_similarity(
+        negative_student["projected_embeds"],
+        negative_teacher["text_embeds"],
+        dim=-1,
+    ).mean()
+    text_loss = (anchor_text_loss + positive_text_loss + negative_text_loss) / 3.0
+
+    anchor_hidden_loss = 1.0 - F.cosine_similarity(
+        anchor_student["predicted_hidden"],
+        anchor_teacher["text_hidden"],
+        dim=-1,
+    ).mean()
+    positive_hidden_loss = 1.0 - F.cosine_similarity(
+        positive_student["predicted_hidden"],
+        positive_teacher["text_hidden"],
+        dim=-1,
+    ).mean()
+    negative_hidden_loss = 1.0 - F.cosine_similarity(
+        negative_student["predicted_hidden"],
+        negative_teacher["text_hidden"],
+        dim=-1,
+    ).mean()
+    hidden_loss = (anchor_hidden_loss + positive_hidden_loss + negative_hidden_loss) / 3.0
+
+    temperature = max(contrastive_temperature, 1e-6)
+    candidate_teacher = torch.cat([positive_teacher["text_embeds"], negative_teacher["text_embeds"]], dim=0)
+    logits = (anchor_student["projected_embeds"] @ candidate_teacher.T) / temperature
+    labels = torch.arange(logits.size(0), device=logits.device)
+    contrastive_loss = F.cross_entropy(logits, labels)
+
+    positive_sim = F.cosine_similarity(
+        anchor_student["projected_embeds"],
+        positive_student["projected_embeds"],
+        dim=-1,
+    )
+    negative_sim = F.cosine_similarity(
+        anchor_student["projected_embeds"],
+        negative_student["projected_embeds"],
+        dim=-1,
+    )
+    triplet_loss = F.relu(triplet_margin - positive_sim + negative_sim).mean()
+
+    total = (
+        teacher_text_weight * text_loss
+        + hidden_state_weight * hidden_loss
+        + contrastive_weight * contrastive_loss
+        + triplet_weight * triplet_loss
+    )
+
+    metrics = {
+        "loss": total.detach().item(),
+        "text_loss": text_loss.detach().item(),
+        "hidden_loss": hidden_loss.detach().item(),
+        "contrastive_loss": contrastive_loss.detach().item(),
+        "triplet_loss": triplet_loss.detach().item(),
+        "positive_sim": positive_sim.detach().mean().item(),
+        "negative_sim": negative_sim.detach().mean().item(),
+    }
+    return total, metrics

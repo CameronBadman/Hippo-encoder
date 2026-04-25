@@ -12,7 +12,11 @@ from transformers import get_linear_schedule_with_warmup
 
 from hippo_encoder.config import DistillConfig
 from hippo_encoder.data import DistillJsonlDataset
-from hippo_encoder.losses import pair_distillation_loss, text_distillation_loss
+from hippo_encoder.losses import (
+    pair_distillation_loss,
+    text_distillation_loss,
+    triplet_distillation_loss,
+)
 from hippo_encoder.student import TinyEncoderStudent
 from hippo_encoder.teacher import TextTeacher
 
@@ -118,16 +122,43 @@ def train(config: DistillConfig) -> None:
                     device=device,
                     max_length=config.max_text_length,
                 )
-                loss, metrics = pair_distillation_loss(
-                    anchor_student=anchor_student,
-                    positive_student=positive_student,
-                    anchor_teacher=anchor_teacher,
-                    positive_teacher=positive_teacher,
-                    teacher_text_weight=config.teacher_text_weight,
-                    hidden_state_weight=config.hidden_state_weight,
-                    contrastive_weight=config.contrastive_weight,
-                    contrastive_temperature=config.contrastive_temperature,
-                )
+                if "negatives" in batch:
+                    negative_teacher = teacher.encode(
+                        texts=batch["negatives"],
+                        device=device,
+                        max_length=config.max_text_length,
+                        normalize=config.normalize_targets,
+                    )
+                    negative_student = student(
+                        texts=batch["negatives"],
+                        device=device,
+                        max_length=config.max_text_length,
+                    )
+                    loss, metrics = triplet_distillation_loss(
+                        anchor_student=anchor_student,
+                        positive_student=positive_student,
+                        negative_student=negative_student,
+                        anchor_teacher=anchor_teacher,
+                        positive_teacher=positive_teacher,
+                        negative_teacher=negative_teacher,
+                        teacher_text_weight=config.teacher_text_weight,
+                        hidden_state_weight=config.hidden_state_weight,
+                        contrastive_weight=config.contrastive_weight,
+                        contrastive_temperature=config.contrastive_temperature,
+                        triplet_weight=config.triplet_weight,
+                        triplet_margin=config.triplet_margin,
+                    )
+                else:
+                    loss, metrics = pair_distillation_loss(
+                        anchor_student=anchor_student,
+                        positive_student=positive_student,
+                        anchor_teacher=anchor_teacher,
+                        positive_teacher=positive_teacher,
+                        teacher_text_weight=config.teacher_text_weight,
+                        hidden_state_weight=config.hidden_state_weight,
+                        contrastive_weight=config.contrastive_weight,
+                        contrastive_temperature=config.contrastive_temperature,
+                    )
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -142,7 +173,8 @@ def train(config: DistillConfig) -> None:
                     f"loss={metrics['loss']:.4f} "
                     f"text={metrics['text_loss']:.4f} "
                     f"hidden={metrics['hidden_loss']:.4f} "
-                    f"contrastive={metrics['contrastive_loss']:.4f}"
+                    f"contrastive={metrics['contrastive_loss']:.4f} "
+                    f"triplet={metrics.get('triplet_loss', 0.0):.4f}"
                 )
 
             if global_step % config.save_every == 0:
