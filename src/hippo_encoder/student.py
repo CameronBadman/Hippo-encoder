@@ -283,20 +283,25 @@ class TinyEncoderStudent(nn.Module):
     ) -> "TinyEncoderStudent":
         checkpoint_dir = Path(checkpoint_dir)
         heads = torch.load(checkpoint_dir / "heads.pt", map_location=device)
+        config = heads.get("config", {})
         target_dim = heads["embed_head"]["weight"].shape[0]
         hidden_target_dim = heads["hidden_head"]["weight"].shape[0]
         saved_terms = int(heads.get("formula_terms_per_side", 0))
         term_budget = saved_terms if formula_terms_per_side is None else formula_terms_per_side
         enable_dense_delta_head = heads.get("dense_delta_head") is not None
+        backbone_path = cls._resolve_checkpoint_backbone(checkpoint_dir, config)
+        tokenizer_path = checkpoint_dir / "tokenizer"
+        if not tokenizer_path.exists():
+            tokenizer_path = Path(config.get("student_model_name", str(backbone_path)))
 
         student = cls(
-            model_name=str(checkpoint_dir / "backbone"),
+            model_name=str(backbone_path),
             target_dim=target_dim,
             hidden_target_dim=hidden_target_dim,
             formula_terms_per_side=term_budget,
             enable_dense_delta_head=enable_dense_delta_head,
-            tokenizer_name=str(checkpoint_dir / "tokenizer"),
-            backbone_name=str(checkpoint_dir / "backbone"),
+            tokenizer_name=str(tokenizer_path),
+            backbone_name=str(backbone_path),
         ).to(device)
         student.embed_head.load_state_dict(heads["embed_head"])
         student.hidden_head.load_state_dict(heads["hidden_head"])
@@ -305,3 +310,29 @@ class TinyEncoderStudent(nn.Module):
         if student.dense_delta_head is not None and heads.get("dense_delta_head") is not None:
             student.dense_delta_head.load_state_dict(heads["dense_delta_head"])
         return student
+
+    @staticmethod
+    def _has_model_weights(path: Path) -> bool:
+        return any(
+            (path / name).exists()
+            for name in (
+                "model.safetensors",
+                "pytorch_model.bin",
+                "tf_model.h5",
+                "flax_model.msgpack",
+            )
+        ) or any(path.glob("model-*.safetensors")) or any(path.glob("pytorch_model-*.bin"))
+
+    @classmethod
+    def _resolve_checkpoint_backbone(cls, checkpoint_dir: Path, config: dict) -> Path | str:
+        backbone_path = checkpoint_dir / "backbone"
+        if cls._has_model_weights(backbone_path):
+            return backbone_path
+
+        init_checkpoint = config.get("init_student_checkpoint")
+        if init_checkpoint:
+            init_backbone_path = Path(init_checkpoint) / "backbone"
+            if cls._has_model_weights(init_backbone_path):
+                return init_backbone_path
+
+        return config.get("student_model_name", str(backbone_path))
