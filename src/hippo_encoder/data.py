@@ -12,7 +12,6 @@ class DistillJsonlDataset(Dataset):
     def __init__(self, jsonl_path: str | Path):
         self.jsonl_path = Path(jsonl_path)
         self.rows = []
-        self.schema: str | None = None
 
         with self.jsonl_path.open("r", encoding="utf-8") as handle:
             for line in handle:
@@ -20,14 +19,10 @@ class DistillJsonlDataset(Dataset):
                 if not line:
                     continue
                 row = json.loads(line)
-                schema = self._infer_schema(row)
-                if self.schema is None:
-                    self.schema = schema
-                elif schema != self.schema:
-                    raise ValueError(f"Mixed dataset schemas are not supported: {self.schema} vs {schema}")
+                self._infer_schema(row)
                 self.rows.append(row)
 
-        if self.schema is None:
+        if not self.rows:
             raise ValueError("Dataset is empty.")
 
     def __len__(self) -> int:
@@ -35,7 +30,8 @@ class DistillJsonlDataset(Dataset):
 
     def __getitem__(self, index: int) -> dict:
         row = self.rows[index]
-        if self.schema == "text":
+        schema = self._infer_schema(row)
+        if schema == "text":
             return {"text": row["text"]}
 
         item = {

@@ -28,17 +28,34 @@ def seed_everything(seed: int) -> None:
 
 
 def collate_fn(rows: list[dict]) -> dict:
-    if "text" in rows[0]:
-        return {"schema": "text", "texts": [row["text"] for row in rows]}
-
-    batch = {
-        "schema": "pair",
-        "anchors": [row["anchor"] for row in rows],
-        "positives": [row["positive"] for row in rows],
+    batch: dict = {
+        "texts": [],
+        "pairs": {"anchors": [], "positives": []},
+        "triplets": {"anchors": [], "positives": [], "negatives": []},
     }
-    if all("negative" in row for row in rows):
-        batch["negatives"] = [row["negative"] for row in rows]
+    for row in rows:
+        if "text" in row:
+            batch["texts"].append(row["text"])
+        elif "negative" in row:
+            batch["triplets"]["anchors"].append(row["anchor"])
+            batch["triplets"]["positives"].append(row["positive"])
+            batch["triplets"]["negatives"].append(row["negative"])
+        else:
+            batch["pairs"]["anchors"].append(row["anchor"])
+            batch["pairs"]["positives"].append(row["positive"])
     return batch
+
+
+def merge_weighted_metrics(metric_parts: list[tuple[dict, int]]) -> dict:
+    total_weight = sum(weight for _, weight in metric_parts)
+    if total_weight <= 0:
+        raise ValueError("Cannot merge metrics from an empty batch.")
+
+    keys = set().union(*(metrics.keys() for metrics, _ in metric_parts))
+    merged = {}
+    for key in keys:
+        merged[key] = sum(metrics.get(key, 0.0) * weight for metrics, weight in metric_parts) / total_weight
+    return merged
 
 
 def train(config: DistillConfig) -> None:
@@ -85,7 +102,10 @@ def train(config: DistillConfig) -> None:
     for epoch in range(config.num_epochs):
         student.train()
         for batch in loader:
-            if batch["schema"] == "text":
+            loss_parts: list[tuple[torch.Tensor, int]] = []
+            metric_parts: list[tuple[dict, int]] = []
+
+            if batch["texts"]:
                 teacher_outputs = teacher.encode(
                     texts=batch["texts"],
                     device=device,
@@ -105,66 +125,101 @@ def train(config: DistillConfig) -> None:
                     contrastive_weight=config.contrastive_weight,
                     contrastive_temperature=config.contrastive_temperature,
                 )
-            else:
+                loss_parts.append((loss, len(batch["texts"])))
+                metric_parts.append((metrics, len(batch["texts"])))
+
+            if batch["pairs"]["anchors"]:
                 anchor_teacher = teacher.encode(
-                    texts=batch["anchors"],
+                    texts=batch["pairs"]["anchors"],
                     device=device,
                     max_length=config.max_text_length,
                     normalize=config.normalize_targets,
                 )
                 positive_teacher = teacher.encode(
-                    texts=batch["positives"],
+                    texts=batch["pairs"]["positives"],
                     device=device,
                     max_length=config.max_text_length,
                     normalize=config.normalize_targets,
                 )
                 anchor_student = student(
-                    texts=batch["anchors"],
+                    texts=batch["pairs"]["anchors"],
                     device=device,
                     max_length=config.max_text_length,
                 )
                 positive_student = student(
-                    texts=batch["positives"],
+                    texts=batch["pairs"]["positives"],
                     device=device,
                     max_length=config.max_text_length,
                 )
-                if "negatives" in batch:
-                    negative_teacher = teacher.encode(
-                        texts=batch["negatives"],
-                        device=device,
-                        max_length=config.max_text_length,
-                        normalize=config.normalize_targets,
-                    )
-                    negative_student = student(
-                        texts=batch["negatives"],
-                        device=device,
-                        max_length=config.max_text_length,
-                    )
-                    loss, metrics = triplet_distillation_loss(
-                        anchor_student=anchor_student,
-                        positive_student=positive_student,
-                        negative_student=negative_student,
-                        anchor_teacher=anchor_teacher,
-                        positive_teacher=positive_teacher,
-                        negative_teacher=negative_teacher,
-                        teacher_text_weight=config.teacher_text_weight,
-                        hidden_state_weight=config.hidden_state_weight,
-                        contrastive_weight=config.contrastive_weight,
-                        contrastive_temperature=config.contrastive_temperature,
-                        triplet_weight=config.triplet_weight,
-                        triplet_margin=config.triplet_margin,
-                    )
-                else:
-                    loss, metrics = pair_distillation_loss(
-                        anchor_student=anchor_student,
-                        positive_student=positive_student,
-                        anchor_teacher=anchor_teacher,
-                        positive_teacher=positive_teacher,
-                        teacher_text_weight=config.teacher_text_weight,
-                        hidden_state_weight=config.hidden_state_weight,
-                        contrastive_weight=config.contrastive_weight,
-                        contrastive_temperature=config.contrastive_temperature,
-                    )
+                loss, metrics = pair_distillation_loss(
+                    anchor_student=anchor_student,
+                    positive_student=positive_student,
+                    anchor_teacher=anchor_teacher,
+                    positive_teacher=positive_teacher,
+                    teacher_text_weight=config.teacher_text_weight,
+                    hidden_state_weight=config.hidden_state_weight,
+                    contrastive_weight=config.contrastive_weight,
+                    contrastive_temperature=config.contrastive_temperature,
+                )
+                weight = len(batch["pairs"]["anchors"])
+                loss_parts.append((loss, weight))
+                metric_parts.append((metrics, weight))
+
+            if batch["triplets"]["anchors"]:
+                anchor_teacher = teacher.encode(
+                    texts=batch["triplets"]["anchors"],
+                    device=device,
+                    max_length=config.max_text_length,
+                    normalize=config.normalize_targets,
+                )
+                positive_teacher = teacher.encode(
+                    texts=batch["triplets"]["positives"],
+                    device=device,
+                    max_length=config.max_text_length,
+                    normalize=config.normalize_targets,
+                )
+                negative_teacher = teacher.encode(
+                    texts=batch["triplets"]["negatives"],
+                    device=device,
+                    max_length=config.max_text_length,
+                    normalize=config.normalize_targets,
+                )
+                anchor_student = student(
+                    texts=batch["triplets"]["anchors"],
+                    device=device,
+                    max_length=config.max_text_length,
+                )
+                positive_student = student(
+                    texts=batch["triplets"]["positives"],
+                    device=device,
+                    max_length=config.max_text_length,
+                )
+                negative_student = student(
+                    texts=batch["triplets"]["negatives"],
+                    device=device,
+                    max_length=config.max_text_length,
+                )
+                loss, metrics = triplet_distillation_loss(
+                    anchor_student=anchor_student,
+                    positive_student=positive_student,
+                    negative_student=negative_student,
+                    anchor_teacher=anchor_teacher,
+                    positive_teacher=positive_teacher,
+                    negative_teacher=negative_teacher,
+                    teacher_text_weight=config.teacher_text_weight,
+                    hidden_state_weight=config.hidden_state_weight,
+                    contrastive_weight=config.contrastive_weight,
+                    contrastive_temperature=config.contrastive_temperature,
+                    triplet_weight=config.triplet_weight,
+                    triplet_margin=config.triplet_margin,
+                )
+                weight = len(batch["triplets"]["anchors"])
+                loss_parts.append((loss, weight))
+                metric_parts.append((metrics, weight))
+
+            total_weight = sum(weight for _, weight in loss_parts)
+            loss = sum(loss_part * weight for loss_part, weight in loss_parts) / total_weight
+            metrics = merge_weighted_metrics(metric_parts)
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
