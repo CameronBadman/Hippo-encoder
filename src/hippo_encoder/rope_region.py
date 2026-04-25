@@ -465,6 +465,73 @@ class DualRopeFormulaProgram:
             plus_terms=plus_terms,
         )
 
+    @classmethod
+    def from_region_case(
+        cls,
+        anchor: torch.Tensor,
+        positives: torch.Tensor,
+        negatives: torch.Tensor,
+        terms_per_side: int,
+        base_radius: float = 0.01,
+        radius_scale: float = 1.0,
+        quantize_step: float = 0.01,
+        change_threshold: float = 0.005,
+        negative_weight: float = 0.75,
+        size_weight: float = 0.02,
+    ) -> "DualRopeFormulaProgram":
+        if anchor.dim() != 1:
+            raise ValueError("Anchor must be a 1D tensor.")
+        if positives.dim() != 2 or positives.shape[1] != anchor.shape[0]:
+            raise ValueError("Positives must have shape [N, D] with same D as anchor.")
+        if negatives.dim() != 2 or negatives.shape[1] != anchor.shape[0]:
+            raise ValueError("Negatives must have shape [N, D] with same D as anchor.")
+
+        deltas = positives - anchor.unsqueeze(0)
+        minus_target = torch.clamp((-deltas).max(dim=0).values * radius_scale, min=base_radius)
+        plus_target = torch.clamp(deltas.max(dim=0).values * radius_scale, min=base_radius)
+
+        minus_terms = _fit_rope_formula_terms_negative_aware(
+            base_minus=torch.full_like(anchor, base_radius),
+            base_plus=torch.full_like(anchor, base_radius),
+            current_minus_terms=[],
+            current_plus_terms=[],
+            target_dense=minus_target,
+            target="minus",
+            anchor=anchor,
+            positives=positives,
+            negatives=negatives,
+            terms=terms_per_side,
+            base_value=base_radius,
+            quantize_step=quantize_step,
+            change_threshold=change_threshold,
+            negative_weight=negative_weight,
+            size_weight=size_weight,
+        )
+        plus_terms = _fit_rope_formula_terms_negative_aware(
+            base_minus=torch.full_like(anchor, base_radius),
+            base_plus=torch.full_like(anchor, base_radius),
+            current_minus_terms=minus_terms,
+            current_plus_terms=[],
+            target_dense=plus_target,
+            target="plus",
+            anchor=anchor,
+            positives=positives,
+            negatives=negatives,
+            terms=terms_per_side,
+            base_value=base_radius,
+            quantize_step=quantize_step,
+            change_threshold=change_threshold,
+            negative_weight=negative_weight,
+            size_weight=size_weight,
+        )
+        return cls(
+            dimensions=anchor.shape[0],
+            base_minus=base_radius,
+            base_plus=base_radius,
+            minus_terms=minus_terms,
+            plus_terms=plus_terms,
+        )
+
     @staticmethod
     def _apply_terms(
         target: torch.Tensor,
@@ -693,6 +760,204 @@ def _fit_rope_formula_terms(
         if len(terms_out) >= terms:
             break
     return terms_out[:terms]
+
+
+def _fit_rope_formula_terms_negative_aware(
+    base_minus: torch.Tensor,
+    base_plus: torch.Tensor,
+    current_minus_terms: list[RopeFormulaTerm],
+    current_plus_terms: list[RopeFormulaTerm],
+    target_dense: torch.Tensor,
+    target: str,
+    anchor: torch.Tensor,
+    positives: torch.Tensor,
+    negatives: torch.Tensor,
+    terms: int,
+    base_value: float,
+    quantize_step: float,
+    change_threshold: float,
+    negative_weight: float,
+    size_weight: float,
+) -> list[RopeFormulaTerm]:
+    if target_dense.dim() != 1:
+        raise ValueError("Target dense array must be 1D.")
+    if terms <= 0:
+        return []
+
+    terms_out = list(current_minus_terms if target == "minus" else current_plus_terms)
+    new_terms: list[RopeFormulaTerm] = []
+    residual = torch.round((target_dense - base_value) / quantize_step) * quantize_step
+    rope_ids, xs, ys = _layout_tensors(target_dense.shape[0], device=target_dense.device)
+    xs = xs.to(target_dense.dtype)
+    ys = ys.to(target_dense.dtype)
+
+    for _ in range(terms):
+        active = torch.nonzero(torch.abs(residual) >= change_threshold, as_tuple=False).flatten()
+        if active.numel() == 0:
+            break
+        candidates = _candidate_formula_terms_from_dense_residual(
+            residual=residual,
+            rope_ids=rope_ids,
+            xs=xs,
+            ys=ys,
+            target=target,
+            max_anchors=8,
+        )
+        if not candidates:
+            break
+
+        current_minus = base_minus.clone()
+        current_plus = base_plus.clone()
+        DualRopeFormulaProgram._apply_terms(current_minus, current_minus_terms + (new_terms if target == "minus" else []), rope_ids, xs, ys)
+        DualRopeFormulaProgram._apply_terms(current_plus, current_plus_terms + (new_terms if target == "plus" else []), rope_ids, xs, ys)
+        current_score = _region_behavior_score(
+            anchor=anchor,
+            minus=current_minus,
+            plus=current_plus,
+            positives=positives,
+            negatives=negatives,
+            negative_weight=negative_weight,
+            size_weight=size_weight,
+        )
+
+        best_score = current_score
+        best_term: RopeFormulaTerm | None = None
+        best_values: torch.Tensor | None = None
+        for candidate in candidates:
+            mask = rope_ids == candidate.rope
+            if not bool(mask.any()):
+                continue
+            values = _formula_values(candidate, xs, ys) * mask.to(xs.dtype)
+            basis = values[mask]
+            residual_vals = residual[mask]
+            denom = float((basis * basis).sum().item()) + 1e-8
+            amp = float((residual_vals * basis).sum().item()) / denom
+            if abs(amp) < change_threshold:
+                continue
+            trial = RopeFormulaTerm(
+                target=candidate.target,
+                rope=candidate.rope,
+                term_type=candidate.term_type,
+                cx=candidate.cx,
+                cy=candidate.cy,
+                amp=amp,
+                sx=candidate.sx,
+                sy=candidate.sy,
+                support_radius_x=candidate.support_radius_x,
+                support_radius_y=candidate.support_radius_y,
+            )
+            trial_values = _formula_values(trial, xs, ys) * mask.to(xs.dtype)
+            trial_minus = current_minus.clone()
+            trial_plus = current_plus.clone()
+            if target == "minus":
+                trial_minus = torch.clamp(trial_minus + trial_values, min=0.0)
+            else:
+                trial_plus = torch.clamp(trial_plus + trial_values, min=0.0)
+            score = _region_behavior_score(
+                anchor=anchor,
+                minus=trial_minus,
+                plus=trial_plus,
+                positives=positives,
+                negatives=negatives,
+                negative_weight=negative_weight,
+                size_weight=size_weight,
+            )
+            if score > best_score:
+                best_score = score
+                best_term = trial
+                best_values = trial_values
+
+        if best_term is None or best_values is None:
+            break
+        new_terms.append(best_term)
+        residual = residual - best_values
+        residual = torch.round(residual / quantize_step) * quantize_step
+
+    return new_terms
+
+
+def _candidate_formula_terms_from_dense_residual(
+    residual: torch.Tensor,
+    rope_ids: torch.Tensor,
+    xs: torch.Tensor,
+    ys: torch.Tensor,
+    target: str,
+    max_anchors: int,
+) -> list[RopeFormulaTerm]:
+    scores = torch.abs(residual)
+    active_count = min(max_anchors, scores.numel())
+    _, order = torch.topk(scores, k=active_count, largest=True)
+    candidates: list[RopeFormulaTerm] = []
+    for index in order.tolist():
+        if abs(float(residual[index].item())) < 1e-8:
+            continue
+        rope = int(rope_ids[index].item())
+        cx = float(xs[index].item())
+        cy = float(ys[index].item())
+        for sx in (0.5, 0.75, 1.5, 3.0):
+            for sy in (0.5, 0.75, 1.5, 3.0):
+                candidates.append(
+                    RopeFormulaTerm(
+                        target=target,
+                        rope=rope,
+                        term_type="gaussian",
+                        cx=cx,
+                        cy=cy,
+                        amp=1.0,
+                        sx=sx,
+                        sy=sy,
+                        support_radius_x=max(1.5, 3.0 * sx),
+                        support_radius_y=max(1.5, 3.0 * sy),
+                    )
+                )
+        for sx in (0.5, 0.75, 1.5, 3.0):
+            candidates.append(
+                RopeFormulaTerm(
+                    target=target,
+                    rope=rope,
+                    term_type="ridge_x",
+                    cx=cx,
+                    cy=cy,
+                    amp=1.0,
+                    sx=sx,
+                    sy=1.0,
+                    support_radius_x=max(1.5, 3.0 * sx),
+                    support_radius_y=2.0,
+                )
+            )
+        for sy in (0.5, 0.75, 1.5, 3.0):
+            candidates.append(
+                RopeFormulaTerm(
+                    target=target,
+                    rope=rope,
+                    term_type="ridge_y",
+                    cx=cx,
+                    cy=cy,
+                    amp=1.0,
+                    sx=1.0,
+                    sy=sy,
+                    support_radius_x=2.0,
+                    support_radius_y=max(1.5, 3.0 * sy),
+                )
+            )
+    return candidates
+
+
+def _region_behavior_score(
+    anchor: torch.Tensor,
+    minus: torch.Tensor,
+    plus: torch.Tensor,
+    positives: torch.Tensor,
+    negatives: torch.Tensor,
+    negative_weight: float,
+    size_weight: float,
+) -> float:
+    lower = anchor - minus
+    upper = anchor + plus
+    pos_frac = inside_fraction(positives, lower, upper).mean()
+    neg_frac = inside_fraction(negatives, lower, upper).mean()
+    size = (minus.mean() + plus.mean()) * 0.5
+    return float((pos_frac - negative_weight * neg_frac - size_weight * size).item())
 
 
 def _best_formula_term(

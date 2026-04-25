@@ -90,6 +90,8 @@ def evaluate_encoded_case(
     min_radius: float,
     terms_per_side: int,
     program_type: str,
+    negative_weight: float,
+    size_weight: float,
 ) -> dict:
     if program_type == "point":
         program = DualRopePointProgram.from_teacher_spread(
@@ -114,6 +116,17 @@ def evaluate_encoded_case(
             terms_per_side=terms_per_side,
             base_radius=min_radius,
             radius_scale=radius_scale,
+        )
+    elif program_type == "formula_neg":
+        program = DualRopeFormulaProgram.from_region_case(
+            anchor=encoded.teacher_query,
+            positives=encoded.teacher_positives,
+            negatives=encoded.teacher_negatives,
+            terms_per_side=terms_per_side,
+            base_radius=min_radius,
+            radius_scale=radius_scale,
+            negative_weight=negative_weight,
+            size_weight=size_weight,
         )
     else:
         raise ValueError(f"Unsupported program type: {program_type}")
@@ -194,8 +207,10 @@ def main() -> None:
     parser.add_argument("--radius-scale", type=float, default=1.0)
     parser.add_argument("--min-radius", type=float, default=0.01)
     parser.add_argument("--budgets", type=int, nargs="+", default=[16, 32, 64, 128])
-    parser.add_argument("--program-type", choices=("point", "shape", "formula"), default="point")
+    parser.add_argument("--program-type", choices=("point", "shape", "formula", "formula_neg"), default="point")
     parser.add_argument("--case-limit", type=int, default=None)
+    parser.add_argument("--negative-weight", type=float, default=0.75)
+    parser.add_argument("--size-weight", type=float, default=0.02)
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -218,6 +233,8 @@ def main() -> None:
                 min_radius=args.min_radius,
                 terms_per_side=budget,
                 program_type=args.program_type,
+                negative_weight=args.negative_weight,
+                size_weight=args.size_weight,
             )
             for encoded in encoded_cases
         ]
