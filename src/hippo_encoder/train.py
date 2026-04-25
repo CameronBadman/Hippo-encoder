@@ -57,11 +57,17 @@ def train(config: DistillConfig) -> None:
     )
 
     teacher = TextTeacher(config.teacher_model_name).to(device)
-    student = TinyEncoderStudent(
-        model_name=config.student_model_name,
-        target_dim=teacher.embedding_dim,
-        hidden_target_dim=teacher.hidden_dim,
-    ).to(device)
+    if config.init_student_checkpoint:
+        student = TinyEncoderStudent.load_checkpoint(
+            config.init_student_checkpoint,
+            device=device,
+        )
+    else:
+        student = TinyEncoderStudent(
+            model_name=config.student_model_name,
+            target_dim=teacher.embedding_dim,
+            hidden_target_dim=teacher.hidden_dim,
+        ).to(device)
 
     optimizer = AdamW(
         student.parameters(),

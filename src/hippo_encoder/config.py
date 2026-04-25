@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 
 @dataclass
@@ -11,6 +12,7 @@ class DistillConfig:
     student_model_name: str
     dataset_jsonl: str
     output_dir: str
+    init_student_checkpoint: Optional[str] = None
     max_text_length: int = 64
     batch_size: int = 8
     num_epochs: int = 1
