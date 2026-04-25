@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
@@ -60,45 +61,56 @@ class StudentEncoder:
         return outputs["projected_embeds"]
 
 
-def evaluate_case(
-    case: dict,
-    teacher: TeacherEncoder,
-    student: StudentEncoder,
+@dataclass
+class EncodedCase:
+    query: str
+    teacher_query: torch.Tensor
+    student_query: torch.Tensor
+    teacher_positives: torch.Tensor
+    teacher_negatives: torch.Tensor
+
+
+def encode_case(case: dict, teacher: TeacherEncoder, student: StudentEncoder) -> EncodedCase:
+    query = case["query"]
+    positives = case["positives"]
+    negatives = case["negatives"]
+    return EncodedCase(
+        query=query,
+        teacher_query=teacher.encode([query])[0],
+        student_query=student.encode([query])[0],
+        teacher_positives=teacher.encode(positives),
+        teacher_negatives=teacher.encode(negatives),
+    )
+
+
+def evaluate_encoded_case(
+    encoded: EncodedCase,
     inside_threshold: float,
     radius_scale: float,
     min_radius: float,
     terms_per_side: int,
     program_type: str,
 ) -> dict:
-    query = case["query"]
-    positives = case["positives"]
-    negatives = case["negatives"]
-
-    teacher_query = teacher.encode([query])[0]
-    student_query = student.encode([query])[0]
-    teacher_positives = teacher.encode(positives)
-    teacher_negatives = teacher.encode(negatives)
-
     if program_type == "point":
         program = DualRopePointProgram.from_teacher_spread(
-            anchor=teacher_query,
-            positives=teacher_positives,
+            anchor=encoded.teacher_query,
+            positives=encoded.teacher_positives,
             terms_per_side=terms_per_side,
             base_radius=min_radius,
             radius_scale=radius_scale,
         )
     elif program_type == "shape":
         program = DualRopeShapeProgram.from_teacher_spread(
-            anchor=teacher_query,
-            positives=teacher_positives,
+            anchor=encoded.teacher_query,
+            positives=encoded.teacher_positives,
             terms_per_side=terms_per_side,
             base_radius=min_radius,
             radius_scale=radius_scale,
         )
     elif program_type == "formula":
         program = DualRopeFormulaProgram.from_teacher_spread(
-            anchor=teacher_query,
-            positives=teacher_positives,
+            anchor=encoded.teacher_query,
+            positives=encoded.teacher_positives,
             terms_per_side=terms_per_side,
             base_radius=min_radius,
             radius_scale=radius_scale,
@@ -111,21 +123,21 @@ def evaluate_case(
     if minus_items is None or plus_items is None:
         minus_items = getattr(program, "minus_terms")
         plus_items = getattr(program, "plus_terms")
-    teacher_region = program.hydrate(teacher_query)
-    student_region = program.hydrate(student_query)
+    teacher_region = program.hydrate(encoded.teacher_query)
+    student_region = program.hydrate(encoded.student_query)
 
-    teacher_pos_frac = inside_fraction(teacher_positives, teacher_region["lower"], teacher_region["upper"])
-    teacher_neg_frac = inside_fraction(teacher_negatives, teacher_region["lower"], teacher_region["upper"])
-    student_pos_frac = inside_fraction(teacher_positives, student_region["lower"], student_region["upper"])
-    student_neg_frac = inside_fraction(teacher_negatives, student_region["lower"], student_region["upper"])
+    teacher_pos_frac = inside_fraction(encoded.teacher_positives, teacher_region["lower"], teacher_region["upper"])
+    teacher_neg_frac = inside_fraction(encoded.teacher_negatives, teacher_region["lower"], teacher_region["upper"])
+    student_pos_frac = inside_fraction(encoded.teacher_positives, student_region["lower"], student_region["upper"])
+    student_neg_frac = inside_fraction(encoded.teacher_negatives, student_region["lower"], student_region["upper"])
 
     return {
-        "query": query,
+        "query": encoded.query,
         "minus_point_count": len(minus_items),
         "plus_point_count": len(plus_items),
         "student_teacher_cosine": F.cosine_similarity(
-            student_query.unsqueeze(0),
-            teacher_query.unsqueeze(0),
+            encoded.student_query.unsqueeze(0),
+            encoded.teacher_query.unsqueeze(0),
             dim=-1,
         ).item(),
         "teacher_positive_hit_rate": (teacher_pos_frac >= inside_threshold).float().mean().item(),
@@ -137,16 +149,16 @@ def evaluate_case(
         "student_positive_inside_fraction_mean": student_pos_frac.mean().item(),
         "student_negative_inside_fraction_mean": student_neg_frac.mean().item(),
         "teacher_positive_soft_distance_mean": soft_box_distance(
-            teacher_positives, teacher_region["lower"], teacher_region["upper"]
+            encoded.teacher_positives, teacher_region["lower"], teacher_region["upper"]
         ).mean().item(),
         "teacher_negative_soft_distance_mean": soft_box_distance(
-            teacher_negatives, teacher_region["lower"], teacher_region["upper"]
+            encoded.teacher_negatives, teacher_region["lower"], teacher_region["upper"]
         ).mean().item(),
         "student_positive_soft_distance_mean": soft_box_distance(
-            teacher_positives, student_region["lower"], student_region["upper"]
+            encoded.teacher_positives, student_region["lower"], student_region["upper"]
         ).mean().item(),
         "student_negative_soft_distance_mean": soft_box_distance(
-            teacher_negatives, student_region["lower"], student_region["upper"]
+            encoded.teacher_negatives, student_region["lower"], student_region["upper"]
         ).mean().item(),
     }
 
@@ -183,29 +195,31 @@ def main() -> None:
     parser.add_argument("--min-radius", type=float, default=0.01)
     parser.add_argument("--budgets", type=int, nargs="+", default=[16, 32, 64, 128])
     parser.add_argument("--program-type", choices=("point", "shape", "formula"), default="point")
+    parser.add_argument("--case-limit", type=int, default=None)
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     with open(args.cases, "r", encoding="utf-8") as handle:
         cases = json.load(handle)
+    if args.case_limit is not None:
+        cases = cases[: args.case_limit]
 
     teacher = TeacherEncoder(args.teacher_model, device=device, max_length=args.max_length)
     student = StudentEncoder(args.student_checkpoint, device=device, max_length=args.max_length)
+    encoded_cases = [encode_case(case, teacher=teacher, student=student) for case in cases]
 
     payload: dict[str, object] = {"budgets": {}}
     for budget in args.budgets:
         results = [
-            evaluate_case(
-                case=case,
-                teacher=teacher,
-                student=student,
+            evaluate_encoded_case(
+                encoded=encoded,
                 inside_threshold=args.inside_threshold,
                 radius_scale=args.radius_scale,
                 min_radius=args.min_radius,
                 terms_per_side=budget,
                 program_type=args.program_type,
             )
-            for case in cases
+            for encoded in encoded_cases
         ]
         payload["budgets"][str(budget)] = {
             "summary": summarize(results),
