@@ -256,6 +256,18 @@ python scripts/benchmark_hippo5_softbox_retrieval.py \
 
 This reports retrieval-facing metrics such as top-1 accuracy, precision@K, recall@K, MRR, and score-threshold precision/recall using the same weighted soft-box violation formula as Hippo-5 `SearchSoftBox`.
 
+Benchmark LoCoMo long-term memory evidence retrieval through the real Hippo-5 Go database:
+
+```bash
+python scripts/benchmark_locomo_hippo5_retrieval.py \
+  --download \
+  --student-checkpoint /path/to/distill-bge-small/epoch-3 \
+  --hippo5-path /path/to/Hippo-5 \
+  --output /tmp/locomo_hippo5_retrieval.json
+```
+
+This is a fairer memory-system test than region benchmarks: it indexes only conversation turns, queries with the LoCoMo question text, and scores whether the annotated evidence dialog IDs are retrieved at top-k.
+
 ## Default Setup
 
 - Teacher: `intfloat/e5-base-v2`
@@ -281,6 +293,7 @@ This reports retrieval-facing metrics such as top-1 accuracy, precision@K, recal
 - `scripts/benchmark_group_region.py`: grouped anchor-preserving region benchmark
 - `scripts/benchmark_rope_region.py`: two-rope point-region benchmark across budgets
 - `scripts/benchmark_hippo5_softbox_retrieval.py`: Hippo-5-style soft-box retrieval benchmark with large distractor pools
+- `scripts/benchmark_locomo_hippo5_retrieval.py`: LoCoMo long-term memory evidence retrieval through the real Hippo-5 Go database
 - `scripts/benchmark_region_program_size.py`: dense-vs-sparse program size benchmark
 - `scripts/prepare_text_dataset.py`: download and export public text data to JSONL
 - `scripts/prepare_region_cases.py`: build region training cases from text JSONL via teacher-space neighbors
