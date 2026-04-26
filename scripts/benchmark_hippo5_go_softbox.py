@@ -25,6 +25,10 @@ from benchmark_hippo5_softbox_retrieval import (
 )
 
 
+def log_step(started: float, message: str) -> None:
+    print(f"[hippo5-go-benchmark +{time.perf_counter() - started:.1f}s] {message}", file=sys.stderr, flush=True)
+
+
 GO_BENCH_SOURCE = r'''
 package main
 
@@ -377,8 +381,10 @@ def write_jsonl_cases(
     radius_scale: float,
     args: argparse.Namespace,
 ) -> None:
+    started = time.perf_counter()
     with output_path.open("w", encoding="utf-8") as handle:
-        for case in retrieval_cases:
+        total_cases = len(retrieval_cases)
+        for case_index, case in enumerate(retrieval_cases, start=1):
             prepared = prepare_case_region(
                 case,
                 text_to_index=text_to_index,
@@ -408,6 +414,13 @@ def write_jsonl_cases(
                 )
                 + "\n"
             )
+            if case_index == 1 or case_index == total_cases or case_index % 10 == 0:
+                print(
+                    f"[hippo5-go-benchmark +{time.perf_counter() - started:.1f}s] "
+                    f"wrote JSONL case {case_index}/{total_cases}",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
 
 def main() -> None:
@@ -437,19 +450,30 @@ def main() -> None:
 
     started = time.perf_counter()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    log_step(started, f"using device={device}")
     all_source_cases = load_cases(args.cases, seed=args.seed)
     source_cases = all_source_cases[: args.case_limit] if args.case_limit is not None else all_source_cases
     text_pool = collect_text_pool(all_source_cases)
+    log_step(
+        started,
+        f"loaded {len(source_cases)} benchmark cases from {len(all_source_cases)} source cases; "
+        f"text_pool={len(text_pool)}",
+    )
 
+    log_step(started, f"loading teacher={args.teacher_model}")
     teacher = TeacherEncoder(args.teacher_model, device=device, max_length=args.max_length)
+    log_step(started, f"loading student checkpoint={args.student_checkpoint}")
     student = StudentEncoder(args.student_checkpoint, device=device, max_length=args.max_length)
 
     pool_teacher_embeds = None
     pool_text_to_index = None
     if args.positives_per_case > 2:
+        log_step(started, f"encoding teacher pool for positive expansion: {len(text_pool)} texts")
         pool_text_to_index = {text: index for index, text in enumerate(text_pool)}
         pool_teacher_embeds = teacher.encode(text_pool, batch_size=args.batch_size)
+        log_step(started, "teacher pool encoded")
 
+    log_step(started, "building retrieval cases")
     retrieval_cases = build_retrieval_cases(
         cases=source_cases,
         text_pool=text_pool,
@@ -459,6 +483,7 @@ def main() -> None:
         text_to_index=pool_text_to_index,
         seed=args.seed + 1,
     )
+    log_step(started, f"built {len(retrieval_cases)} retrieval cases")
     all_texts = collect_text_pool(
         {
             "query": case.query,
@@ -467,17 +492,20 @@ def main() -> None:
         }
         for case in retrieval_cases
     )
+    log_step(started, f"encoding benchmark texts: {len(all_texts)} unique texts")
     text_to_index, teacher_embeds, student_embeds = encode_texts(
         all_texts,
         teacher=teacher,
         student=student,
         batch_size=args.batch_size,
     )
+    log_step(started, "benchmark texts encoded")
 
     with tempfile.TemporaryDirectory(dir=args.work_dir) as tmp:
         tmp_path = Path(tmp)
         jsonl_path = tmp_path / "cases.jsonl"
         go_dir = tmp_path / "go"
+        log_step(started, f"writing temporary JSONL cases to {jsonl_path}")
         write_jsonl_cases(
             jsonl_path,
             retrieval_cases=retrieval_cases,
@@ -487,8 +515,10 @@ def main() -> None:
             radius_scale=args.radius_scale,
             args=args,
         )
+        log_step(started, "building temporary Go benchmark harness")
         binary = write_go_harness(go_dir, hippo5_path=Path(args.hippo5_path).resolve())
         go_output = tmp_path / "go_output.json"
+        log_step(started, "running actual Hippo-5 SearchSoftBox benchmark")
         run(
             [
                 str(binary),
@@ -499,6 +529,7 @@ def main() -> None:
             ],
             cwd=go_dir,
         )
+        log_step(started, "Hippo-5 benchmark completed")
         result = json.loads(go_output.read_text(encoding="utf-8"))
 
     result["config"] = {
@@ -517,6 +548,7 @@ def main() -> None:
     }
     encoded = json.dumps(result, indent=2)
     Path(args.output).write_text(encoded, encoding="utf-8")
+    log_step(started, f"wrote output to {args.output}")
     print(encoded)
 
 

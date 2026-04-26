@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,10 @@ DEFAULT_PRESET = {
 }
 
 
+def log_progress(message: str) -> None:
+    print(f"[hippo5-benchmark] {message}", file=sys.stderr, flush=True)
+
+
 def masked_mean(hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
     mask = attention_mask.unsqueeze(-1).float()
     masked = hidden_states * mask
@@ -47,7 +52,8 @@ class TeacherEncoder:
     @torch.no_grad()
     def encode(self, texts: list[str], batch_size: int) -> torch.Tensor:
         outputs = []
-        for start in range(0, len(texts), batch_size):
+        total_batches = max(1, (len(texts) + batch_size - 1) // batch_size)
+        for batch_index, start in enumerate(range(0, len(texts), batch_size), start=1):
             batch_texts = texts[start : start + batch_size]
             batch = self.tokenizer(
                 batch_texts,
@@ -60,6 +66,11 @@ class TeacherEncoder:
             model_outputs = self.model(**batch, return_dict=True)
             embeds = masked_mean(model_outputs.last_hidden_state, batch["attention_mask"])
             outputs.append(F.normalize(embeds, dim=-1).cpu())
+            if batch_index == 1 or batch_index == total_batches or batch_index % 25 == 0:
+                log_progress(
+                    f"teacher encoded batch {batch_index}/{total_batches} "
+                    f"({min(start + len(batch_texts), len(texts))}/{len(texts)} texts)"
+                )
         return torch.cat(outputs, dim=0)
 
 
@@ -73,10 +84,16 @@ class StudentEncoder:
     @torch.no_grad()
     def encode(self, texts: list[str], batch_size: int) -> torch.Tensor:
         outputs = []
-        for start in range(0, len(texts), batch_size):
+        total_batches = max(1, (len(texts) + batch_size - 1) // batch_size)
+        for batch_index, start in enumerate(range(0, len(texts), batch_size), start=1):
             batch_texts = texts[start : start + batch_size]
             batch_outputs = self.student(texts=batch_texts, device=self.device, max_length=self.max_length)
             outputs.append(batch_outputs["projected_embeds"].cpu())
+            if batch_index == 1 or batch_index == total_batches or batch_index % 25 == 0:
+                log_progress(
+                    f"student encoded batch {batch_index}/{total_batches} "
+                    f"({min(start + len(batch_texts), len(texts))}/{len(texts)} texts)"
+                )
         return torch.cat(outputs, dim=0)
 
 
