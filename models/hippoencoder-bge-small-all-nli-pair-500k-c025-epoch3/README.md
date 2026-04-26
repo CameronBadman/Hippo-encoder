@@ -13,6 +13,29 @@ The weight artifact is not committed directly to normal Git because `backbone/mo
 
 An `xz -9e` artifact is also available at `/content/drive/MyDrive/hippo_encoder_runs/hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3.tar.xz`. It is `120507304` bytes with SHA256 `22ca9b219497fb8e7ea9c45df6d30608137fd2a8e50db3d290ddea8bd8a438d0`, so stronger compression still does not fit under GitHub's normal 100 MB limit.
 
+## Split Chunks
+
+For convenience, the artifact can also be stored as Git-tracked chunks under `chunks/`.
+
+Reassemble:
+
+```bash
+python scripts/reassemble_model_artifact.py \
+  --manifest models/hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3/chunks/chunks.json \
+  --output /tmp/hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3.tar.xz \
+  --extract-to /tmp/hippoencoder-model
+```
+
+Create/update chunks from an artifact:
+
+```bash
+python scripts/split_model_artifact.py \
+  --artifact /path/to/hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3.tar.xz \
+  --output-dir models/hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3/chunks \
+  --manifest models/hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3/chunks/chunks.json \
+  --chunk-size-mb 45
+```
+
 ## Use
 
 After downloading or copying the artifact locally:
