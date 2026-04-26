@@ -18,6 +18,7 @@ from hippo_encoder.student import TinyEncoderStudent
 
 DEFAULT_SCORE_THRESHOLDS = [0.001, 0.002, 0.003, 0.004, 0.005, 0.0075, 0.01]
 DEFAULT_TOP_K = [1, 2, 3, 5, 10]
+SCORE_MODES = ("mean", "inv_radius_weighted", "topk_overflow", "mean_plus_max", "mean_plus_l2")
 DEFAULT_PRESET = {
     "terms_per_side": 32,
     "min_radius": 0.015,
@@ -211,14 +212,29 @@ def soft_box_scores(
     query: torch.Tensor,
     minus: torch.Tensor,
     plus: torch.Tensor,
-    weights: torch.Tensor | None,
+    mode: str,
+    overflow_topk: int,
+    max_overflow_alpha: float,
+    l2_alpha: float,
+    distances: torch.Tensor,
 ) -> torch.Tensor:
     lower = query - minus
     upper = query + plus
     overflow = torch.relu(lower.unsqueeze(0) - vectors) + torch.relu(vectors - upper.unsqueeze(0))
-    if weights is None:
-        return overflow.mean(dim=-1)
-    return (overflow * weights.unsqueeze(0)).sum(dim=-1) / weights.sum().clamp(min=1e-12)
+    mean_score = overflow.mean(dim=-1)
+    if mode == "mean":
+        return mean_score
+    if mode == "inv_radius_weighted":
+        weights = 1.0 / (minus + plus + 1e-6)
+        return (overflow * weights.unsqueeze(0)).sum(dim=-1) / weights.sum().clamp(min=1e-12)
+    if mode == "topk_overflow":
+        topk = min(max(1, overflow_topk), overflow.shape[-1])
+        return torch.topk(overflow, k=topk, dim=-1).values.mean(dim=-1)
+    if mode == "mean_plus_max":
+        return mean_score + max_overflow_alpha * overflow.max(dim=-1).values
+    if mode == "mean_plus_l2":
+        return mean_score + l2_alpha * distances
+    raise ValueError(f"Unsupported score mode: {mode}")
 
 
 def average_precision_at_k(labels: list[int], k: int) -> float:
@@ -248,6 +264,8 @@ def evaluate_case(
     student_embeds: torch.Tensor,
     top_k: list[int],
     score_thresholds: list[float],
+    score_mode: str,
+    radius_scale: float,
     args: argparse.Namespace,
 ) -> dict:
     query_teacher = tensor_for([case.query], text_to_index, teacher_embeds)[0]
@@ -262,7 +280,7 @@ def evaluate_case(
         negatives=negative_teacher,
         terms_per_side=args.terms_per_side,
         base_radius=args.min_radius,
-        radius_scale=args.radius_scale,
+        radius_scale=radius_scale,
         negative_weight=args.negative_weight,
         size_weight=args.size_weight,
         teacher_weight=args.teacher_weight,
@@ -275,8 +293,18 @@ def evaluate_case(
     vectors = tensor_for(records, text_to_index, student_embeds)
 
     started = time.perf_counter()
-    scores = soft_box_scores(vectors, query_student, region["minus"], region["plus"], weights=None)
     distances = torch.linalg.vector_norm(vectors - query_student.unsqueeze(0), dim=-1)
+    scores = soft_box_scores(
+        vectors,
+        query_student,
+        region["minus"],
+        region["plus"],
+        mode=score_mode,
+        overflow_topk=args.overflow_topk,
+        max_overflow_alpha=args.max_overflow_alpha,
+        l2_alpha=args.l2_alpha,
+        distances=distances,
+    )
     order = sorted(range(len(records)), key=lambda index: (float(scores[index]), float(distances[index]), index))
     elapsed_ms = (time.perf_counter() - started) * 1000.0
 
@@ -392,9 +420,14 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=13)
     parser.add_argument("--top-k", type=int, nargs="+", default=DEFAULT_TOP_K)
     parser.add_argument("--score-thresholds", type=float, nargs="+", default=DEFAULT_SCORE_THRESHOLDS)
+    parser.add_argument("--score-modes", nargs="+", choices=SCORE_MODES, default=["mean"])
+    parser.add_argument("--overflow-topk", type=int, default=32)
+    parser.add_argument("--max-overflow-alpha", type=float, default=0.25)
+    parser.add_argument("--l2-alpha", type=float, default=0.01)
     parser.add_argument("--terms-per-side", type=int, default=DEFAULT_PRESET["terms_per_side"])
     parser.add_argument("--min-radius", type=float, default=DEFAULT_PRESET["min_radius"])
     parser.add_argument("--radius-scale", type=float, default=DEFAULT_PRESET["radius_scale"])
+    parser.add_argument("--radius-scales", type=float, nargs="+", default=None)
     parser.add_argument("--negative-weight", type=float, default=DEFAULT_PRESET["negative_weight"])
     parser.add_argument("--size-weight", type=float, default=DEFAULT_PRESET["size_weight"])
     parser.add_argument("--teacher-weight", type=float, default=DEFAULT_PRESET["teacher_weight"])
@@ -438,18 +471,33 @@ def main() -> None:
         batch_size=args.batch_size,
     )
 
-    case_results = [
-        evaluate_case(
-            case,
-            text_to_index=text_to_index,
-            teacher_embeds=teacher_embeds,
-            student_embeds=student_embeds,
-            top_k=args.top_k,
-            score_thresholds=args.score_thresholds,
-            args=args,
-        )
-        for case in retrieval_cases
-    ]
+    radius_scales = args.radius_scales if args.radius_scales is not None else [args.radius_scale]
+    variant_results = {}
+    for radius_scale in radius_scales:
+        for score_mode in args.score_modes:
+            variant_key = f"{score_mode}_radius{radius_scale:g}"
+            case_results = [
+                evaluate_case(
+                    case,
+                    text_to_index=text_to_index,
+                    teacher_embeds=teacher_embeds,
+                    student_embeds=student_embeds,
+                    top_k=args.top_k,
+                    score_thresholds=args.score_thresholds,
+                    score_mode=score_mode,
+                    radius_scale=radius_scale,
+                    args=args,
+                )
+                for case in retrieval_cases
+            ]
+            variant_results[variant_key] = {
+                "score_mode": score_mode,
+                "radius_scale": radius_scale,
+                "summary": aggregate(case_results, top_k=args.top_k, score_thresholds=args.score_thresholds),
+                "cases": case_results if args.include_cases else None,
+            }
+
+    primary_key = next(iter(variant_results))
     payload = {
         "config": {
             "cases": args.cases,
@@ -460,20 +508,36 @@ def main() -> None:
             "positives_per_case": args.positives_per_case,
             "top_k": args.top_k,
             "score_thresholds": args.score_thresholds,
+            "score_modes": args.score_modes,
+            "overflow_topk": args.overflow_topk,
+            "max_overflow_alpha": args.max_overflow_alpha,
+            "l2_alpha": args.l2_alpha,
             "preset": {
                 "terms_per_side": args.terms_per_side,
                 "min_radius": args.min_radius,
                 "radius_scale": args.radius_scale,
+                "radius_scales": radius_scales,
                 "negative_weight": args.negative_weight,
                 "size_weight": args.size_weight,
                 "teacher_weight": args.teacher_weight,
                 "student_weight": args.student_weight,
             },
         },
-        "summary": aggregate(case_results, top_k=args.top_k, score_thresholds=args.score_thresholds),
+        "summary": variant_results[primary_key]["summary"],
+        "variants": {
+            key: {
+                "score_mode": result["score_mode"],
+                "radius_scale": result["radius_scale"],
+                "summary": result["summary"],
+            }
+            for key, result in variant_results.items()
+        },
     }
     if args.include_cases:
-        payload["cases"] = case_results
+        payload["cases"] = {
+            key: result["cases"]
+            for key, result in variant_results.items()
+        }
 
     encoded = json.dumps(payload, indent=2)
     if args.output:
