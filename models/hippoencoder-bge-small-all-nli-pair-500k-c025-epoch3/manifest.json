@@ -1,0 +1,67 @@
+{
+  "name": "hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3",
+  "description": "Hippo-encoder baseline checkpoint trained on 500k all_nli_pair examples with contrastive weight 0.25.",
+  "checkpoint_layout": "TinyEncoderStudent.load_checkpoint compatible directory",
+  "source_checkpoint_colab": "/content/drive/MyDrive/hippo_encoder_runs/distill-bge-small-all-nli-pair-500k-c025/epoch-3",
+  "artifact": {
+    "filename": "hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3.tar.gz",
+    "source_colab_path": "/content/drive/MyDrive/hippo_encoder_runs/hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3.tar.gz",
+    "size_bytes": 124506335,
+    "sha256": "629a57921357a1bf62646ec4ced78d01f3914e299ab118dedf54c7e0cb691837",
+    "github_distribution": "Use a GitHub Release asset or Git LFS. The raw safetensors file is larger than GitHub's normal 100 MB file limit."
+  },
+  "evaluation": {
+    "semantic_eval": {
+      "mean_teacher_student_cosine": 0.816081702709198,
+      "mean_topk_overlap": 0.8611111111111112,
+      "student_paraphrase_margin": 0.5434881081183751
+    },
+    "hippo5_softbox_100q_20pos_1000distractors": {
+      "top1_precision": 1.0,
+      "top10_precision": 0.8909999999999999,
+      "top10_recall": 0.44549999999999995,
+      "top20_precision": 0.8254999999999996,
+      "top20_recall": 0.8254999999999996,
+      "top50_recall": 0.9955000000000002,
+      "score_threshold_0_005_precision": 0.7735105861149683,
+      "score_threshold_0_005_recall": 0.8555000000000003
+    },
+    "locomo_hippo5_retrieval": {
+      "conversations": 10,
+      "questions": 1531,
+      "records": 5882,
+      "top1_hit_rate": 0.2730241672109732,
+      "top5_hit_rate": 0.5440888308295232,
+      "top10_hit_rate": 0.6459830176355323,
+      "top20_hit_rate": 0.7308948399738733,
+      "top50_hit_rate": 0.8412802090137165
+    }
+  },
+  "files": [
+    {
+      "path": "backbone/config.json",
+      "size_bytes": 788,
+      "sha256": "39ddcfd25731c7666248e73ffe11432044534ed20aee11a774ee9e64a21d922b"
+    },
+    {
+      "path": "backbone/model.safetensors",
+      "size_bytes": 133462104,
+      "sha256": "ee1bdb17d3c2151b1d05162ed3fa348c84e60c178c08061d84827692a375dc6f"
+    },
+    {
+      "path": "heads.pt",
+      "size_bytes": 2368585,
+      "sha256": "bb2fef45c57b8deb3b47048ac69b9759696c3b8b76667061c86a4d5836b7bca3"
+    },
+    {
+      "path": "tokenizer/tokenizer.json",
+      "size_bytes": 711648,
+      "sha256": "5f218e0ea9eaa9f154815cc067351fb941bea26da81bfd12af3ded3cc66fa3ff"
+    },
+    {
+      "path": "tokenizer/tokenizer_config.json",
+      "size_bytes": 414,
+      "sha256": "c9c2e0ff3f3a98ae86f8f4a484a48a80d11d3a9453f39de7ab58b5de5f4006de"
+    }
+  ]
+}

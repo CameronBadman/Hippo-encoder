@@ -268,6 +268,21 @@ python scripts/benchmark_locomo_hippo5_retrieval.py \
 
 This is a fairer memory-system test than region benchmarks: it indexes only conversation turns, queries with the LoCoMo question text, and scores whether the annotated evidence dialog IDs are retrieved at top-k.
 
+## Model Artifact
+
+The current baseline model is documented in `models/hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3/`.
+
+The full checkpoint is 130 MB, with a 127 MB `model.safetensors` file. That is larger than GitHub's normal 100 MB file limit, so distribute it as a GitHub Release asset or with Git LFS rather than committing raw weights to `main`.
+
+Verify and unpack the artifact:
+
+```bash
+python scripts/verify_model_artifact.py \
+  --manifest models/hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3/manifest.json \
+  --artifact /path/to/hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3.tar.gz \
+  --extract-to /tmp/hippoencoder-model
+```
+
 ## Default Setup
 
 - Teacher: `intfloat/e5-base-v2`
@@ -294,6 +309,7 @@ This is a fairer memory-system test than region benchmarks: it indexes only conv
 - `scripts/benchmark_rope_region.py`: two-rope point-region benchmark across budgets
 - `scripts/benchmark_hippo5_softbox_retrieval.py`: Hippo-5-style soft-box retrieval benchmark with large distractor pools
 - `scripts/benchmark_locomo_hippo5_retrieval.py`: LoCoMo long-term memory evidence retrieval through the real Hippo-5 Go database
+- `scripts/verify_model_artifact.py`: verify and unpack the released Hippo-encoder checkpoint artifact
 - `scripts/benchmark_region_program_size.py`: dense-vs-sparse program size benchmark
 - `scripts/prepare_text_dataset.py`: download and export public text data to JSONL
 - `scripts/prepare_region_cases.py`: build region training cases from text JSONL via teacher-space neighbors
