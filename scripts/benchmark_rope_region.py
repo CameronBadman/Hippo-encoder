@@ -19,6 +19,20 @@ from hippo_encoder.rope_region import (
 from hippo_encoder.student import TinyEncoderStudent
 
 
+DEFAULT_BUDGETS = [16, 32, 64, 128]
+FORMULA_TRANSFER_PRESETS = {
+    "h100_500k_tuned": {
+        "budgets": [32],
+        "min_radius": 0.015,
+        "radius_scale": 0.85,
+        "negative_weight": 0.8,
+        "size_weight": 0.012,
+        "teacher_weight": 0.25,
+        "student_weight": 1.5,
+    },
+}
+
+
 def masked_mean(hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
     mask = attention_mask.unsqueeze(-1).float()
     masked = hidden_states * mask
@@ -213,6 +227,23 @@ def summarize(results: list[dict]) -> dict:
     return {key: sum(result[key] for result in results) / len(results) for key in keys}
 
 
+def apply_formula_transfer_preset(args: argparse.Namespace) -> None:
+    if args.formula_transfer_preset is None:
+        return
+    if args.program_type != "formula_transfer":
+        raise ValueError("--formula-transfer-preset requires --program-type formula_transfer")
+
+    preset = FORMULA_TRANSFER_PRESETS[args.formula_transfer_preset]
+    args.min_radius = preset["min_radius"]
+    args.radius_scale = preset["radius_scale"]
+    args.negative_weight = preset["negative_weight"]
+    args.size_weight = preset["size_weight"]
+    args.teacher_weight = preset["teacher_weight"]
+    args.student_weight = preset["student_weight"]
+    if args.budgets == DEFAULT_BUDGETS:
+        args.budgets = preset["budgets"]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark dual-rope region programs across term budgets.")
     parser.add_argument("--cases", required=True)
@@ -222,7 +253,7 @@ def main() -> None:
     parser.add_argument("--inside-threshold", type=float, default=0.9)
     parser.add_argument("--radius-scale", type=float, default=1.0)
     parser.add_argument("--min-radius", type=float, default=0.01)
-    parser.add_argument("--budgets", type=int, nargs="+", default=[16, 32, 64, 128])
+    parser.add_argument("--budgets", type=int, nargs="+", default=DEFAULT_BUDGETS.copy())
     parser.add_argument(
         "--program-type",
         choices=("point", "shape", "formula", "formula_neg", "formula_transfer"),
@@ -233,7 +264,14 @@ def main() -> None:
     parser.add_argument("--size-weight", type=float, default=0.02)
     parser.add_argument("--teacher-weight", type=float, default=0.5)
     parser.add_argument("--student-weight", type=float, default=1.0)
+    parser.add_argument(
+        "--formula-transfer-preset",
+        choices=tuple(FORMULA_TRANSFER_PRESETS),
+        default=None,
+        help="Apply a tuned formula_transfer parameter preset.",
+    )
     args = parser.parse_args()
+    apply_formula_transfer_preset(args)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     with open(args.cases, "r", encoding="utf-8") as handle:
