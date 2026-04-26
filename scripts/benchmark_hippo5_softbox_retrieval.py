@@ -112,6 +112,9 @@ def build_retrieval_cases(
     cases: list[dict],
     text_pool: list[str],
     distractors_per_case: int,
+    positives_per_case: int,
+    teacher_embeds: torch.Tensor | None,
+    text_to_index: dict[str, int] | None,
     seed: int,
 ) -> list[RetrievalCase]:
     rng = random.Random(seed)
@@ -120,6 +123,20 @@ def build_retrieval_cases(
         query = case["query"]
         positives = list(dict.fromkeys(case.get("positives", [])))
         negatives = list(dict.fromkeys(case.get("negatives", [])))
+
+        if positives_per_case > len(positives):
+            if teacher_embeds is None or text_to_index is None:
+                raise ValueError("Teacher embeddings are required to expand positives.")
+            positives = expand_positives_by_teacher_neighbors(
+                query=query,
+                positives=positives,
+                negatives=negatives,
+                text_pool=text_pool,
+                text_to_index=text_to_index,
+                teacher_embeds=teacher_embeds,
+                positives_per_case=positives_per_case,
+            )
+
         blocked = {query, *positives, *negatives}
         candidates = [text for text in text_pool if text not in blocked]
         if distractors_per_case > len(candidates):
@@ -137,6 +154,40 @@ def build_retrieval_cases(
             )
         )
     return retrieval_cases
+
+
+def expand_positives_by_teacher_neighbors(
+    query: str,
+    positives: list[str],
+    negatives: list[str],
+    text_pool: list[str],
+    text_to_index: dict[str, int],
+    teacher_embeds: torch.Tensor,
+    positives_per_case: int,
+) -> list[str]:
+    expanded = list(dict.fromkeys(positives))
+    blocked = {query, *expanded, *negatives}
+    query_embed = teacher_embeds[text_to_index[query]]
+    pool_indices = [text_to_index[text] for text in text_pool]
+    sims = teacher_embeds[pool_indices] @ query_embed
+    ranked = sorted(
+        zip(text_pool, sims.tolist(), strict=True),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    for text, _score in ranked:
+        if text in blocked:
+            continue
+        expanded.append(text)
+        blocked.add(text)
+        if len(expanded) >= positives_per_case:
+            break
+    if len(expanded) < positives_per_case:
+        raise ValueError(
+            f"Could only find {len(expanded)} positives for query {query!r}; "
+            f"requested {positives_per_case}."
+        )
+    return expanded
 
 
 def encode_texts(
@@ -327,6 +378,15 @@ def main() -> None:
     parser.add_argument("--output", default=None)
     parser.add_argument("--case-limit", type=int, default=100)
     parser.add_argument("--distractors-per-case", type=int, default=1000)
+    parser.add_argument(
+        "--positives-per-case",
+        type=int,
+        default=2,
+        help=(
+            "Minimum relevant positives per query. Values above the positives already present in the case "
+            "are filled with teacher-nearest neighbors from the corpus."
+        ),
+    )
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--max-length", type=int, default=64)
     parser.add_argument("--seed", type=int, default=13)
@@ -346,10 +406,20 @@ def main() -> None:
     all_source_cases = load_cases(args.cases, seed=args.seed)
     source_cases = all_source_cases[: args.case_limit] if args.case_limit is not None else all_source_cases
     text_pool = collect_text_pool(all_source_cases)
+    teacher = TeacherEncoder(args.teacher_model, device=device, max_length=args.max_length)
+    student = StudentEncoder(args.student_checkpoint, device=device, max_length=args.max_length)
+    pool_teacher_embeds = None
+    pool_text_to_index = None
+    if args.positives_per_case > 2:
+        pool_text_to_index = {text: index for index, text in enumerate(text_pool)}
+        pool_teacher_embeds = teacher.encode(text_pool, batch_size=args.batch_size)
     retrieval_cases = build_retrieval_cases(
         cases=source_cases,
         text_pool=text_pool,
         distractors_per_case=args.distractors_per_case,
+        positives_per_case=args.positives_per_case,
+        teacher_embeds=pool_teacher_embeds,
+        text_to_index=pool_text_to_index,
         seed=args.seed + 1,
     )
 
@@ -361,8 +431,6 @@ def main() -> None:
         }
         for case in retrieval_cases
     )
-    teacher = TeacherEncoder(args.teacher_model, device=device, max_length=args.max_length)
-    student = StudentEncoder(args.student_checkpoint, device=device, max_length=args.max_length)
     text_to_index, teacher_embeds, student_embeds = encode_texts(
         all_texts,
         teacher=teacher,
@@ -389,6 +457,7 @@ def main() -> None:
             "teacher_model": args.teacher_model,
             "case_limit": args.case_limit,
             "distractors_per_case": args.distractors_per_case,
+            "positives_per_case": args.positives_per_case,
             "top_k": args.top_k,
             "score_thresholds": args.score_thresholds,
             "preset": {
