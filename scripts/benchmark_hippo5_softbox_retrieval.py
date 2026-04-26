@@ -257,14 +257,11 @@ def summarize(values: list[float]) -> dict[str, float]:
     }
 
 
-def evaluate_case(
+def prepare_case_region(
     case: RetrievalCase,
     text_to_index: dict[str, int],
     teacher_embeds: torch.Tensor,
     student_embeds: torch.Tensor,
-    top_k: list[int],
-    score_thresholds: list[float],
-    score_mode: str,
     radius_scale: float,
     args: argparse.Namespace,
 ) -> dict:
@@ -291,27 +288,51 @@ def evaluate_case(
     records = [*case.positives, *case.negatives, *case.distractors]
     labels = [1] * len(case.positives) + [0] * (len(case.negatives) + len(case.distractors))
     vectors = tensor_for(records, text_to_index, student_embeds)
-
-    started = time.perf_counter()
     distances = torch.linalg.vector_norm(vectors - query_student.unsqueeze(0), dim=-1)
+
+    return {
+        "query": case.query,
+        "records": records,
+        "labels": labels,
+        "vectors": vectors,
+        "query_student": query_student,
+        "minus": region["minus"],
+        "plus": region["plus"],
+        "distances": distances,
+        "positive_count": len(case.positives),
+        "negative_count": len(labels) - len(case.positives),
+    }
+
+
+def evaluate_prepared_case(
+    prepared: dict,
+    top_k: list[int],
+    score_thresholds: list[float],
+    score_mode: str,
+    args: argparse.Namespace,
+) -> dict:
+    started = time.perf_counter()
     scores = soft_box_scores(
-        vectors,
-        query_student,
-        region["minus"],
-        region["plus"],
+        prepared["vectors"],
+        prepared["query_student"],
+        prepared["minus"],
+        prepared["plus"],
         mode=score_mode,
         overflow_topk=args.overflow_topk,
         max_overflow_alpha=args.max_overflow_alpha,
         l2_alpha=args.l2_alpha,
-        distances=distances,
+        distances=prepared["distances"],
     )
+    records = prepared["records"]
+    labels = prepared["labels"]
+    distances = prepared["distances"]
     order = sorted(range(len(records)), key=lambda index: (float(scores[index]), float(distances[index]), index))
     elapsed_ms = (time.perf_counter() - started) * 1000.0
 
     ordered_labels = [labels[index] for index in order]
     ordered_scores = [float(scores[index]) for index in order]
-    positive_count = len(case.positives)
-    negative_count = len(labels) - positive_count
+    positive_count = prepared["positive_count"]
+    negative_count = prepared["negative_count"]
 
     topk_metrics = {}
     for k in top_k:
@@ -347,7 +368,8 @@ def evaluate_case(
     first_positive_rank = next((rank for rank, label in enumerate(ordered_labels, start=1) if label), None)
 
     return {
-        "query": case.query,
+        "query": prepared["query"],
+        "score_mode": score_mode,
         "record_count": len(records),
         "positive_count": positive_count,
         "negative_count": negative_count,
@@ -474,21 +496,28 @@ def main() -> None:
     radius_scales = args.radius_scales if args.radius_scales is not None else [args.radius_scale]
     variant_results = {}
     for radius_scale in radius_scales:
+        prepared_cases = [
+            prepare_case_region(
+                case,
+                text_to_index=text_to_index,
+                teacher_embeds=teacher_embeds,
+                student_embeds=student_embeds,
+                radius_scale=radius_scale,
+                args=args,
+            )
+            for case in retrieval_cases
+        ]
         for score_mode in args.score_modes:
             variant_key = f"{score_mode}_radius{radius_scale:g}"
             case_results = [
-                evaluate_case(
-                    case,
-                    text_to_index=text_to_index,
-                    teacher_embeds=teacher_embeds,
-                    student_embeds=student_embeds,
+                evaluate_prepared_case(
+                    prepared,
                     top_k=args.top_k,
                     score_thresholds=args.score_thresholds,
                     score_mode=score_mode,
-                    radius_scale=radius_scale,
                     args=args,
                 )
-                for case in retrieval_cases
+                for prepared in prepared_cases
             ]
             variant_results[variant_key] = {
                 "score_mode": score_mode,
