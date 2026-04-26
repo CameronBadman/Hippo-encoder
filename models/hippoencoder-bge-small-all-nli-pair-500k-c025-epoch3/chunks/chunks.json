@@ -1,0 +1,30 @@
+{
+  "artifact_filename": "hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3.tar.xz",
+  "artifact_size_bytes": 120507304,
+  "artifact_sha256": "22ca9b219497fb8e7ea9c45df6d30608137fd2a8e50db3d290ddea8bd8a438d0",
+  "chunk_size_bytes": 47185920,
+  "part_count": 3,
+  "parts": [
+    {
+      "index": 1,
+      "path": "chunks/hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3.tar.xz.part001",
+      "filename": "hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3.tar.xz.part001",
+      "size_bytes": 47185920,
+      "sha256": "8885b24d0982a58decb3a7691dd57728d973d1710819a0aa137d5840bdb5766d"
+    },
+    {
+      "index": 2,
+      "path": "chunks/hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3.tar.xz.part002",
+      "filename": "hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3.tar.xz.part002",
+      "size_bytes": 47185920,
+      "sha256": "3f41df656f678e605bc5f6974398fea4b48c666d0f8cf29a85b8c21cb6797da7"
+    },
+    {
+      "index": 3,
+      "path": "chunks/hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3.tar.xz.part003",
+      "filename": "hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3.tar.xz.part003",
+      "size_bytes": 26135464,
+      "sha256": "b817f8d84678c0a347c37eb7d98b45d5db3556c10b8f236eea51231154f779c7"
+    }
+  ]
+}
