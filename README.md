@@ -243,6 +243,19 @@ python scripts/benchmark_student_formula_region.py \
   --cases benchmarks/sample_region_cases.json
 ```
 
+Benchmark Hippo-5-style soft-box retrieval with larger distractor pools:
+
+```bash
+python scripts/benchmark_hippo5_softbox_retrieval.py \
+  --cases data/region_cases.json \
+  --student-checkpoint /path/to/distill-bge-small/epoch-3 \
+  --case-limit 100 \
+  --distractors-per-case 1000 \
+  --output /tmp/hippo5_softbox_retrieval.json
+```
+
+This reports retrieval-facing metrics such as top-1 accuracy, precision@K, recall@K, MRR, and score-threshold precision/recall using the same weighted soft-box violation formula as Hippo-5 `SearchSoftBox`.
+
 ## Default Setup
 
 - Teacher: `intfloat/e5-base-v2`
@@ -267,6 +280,7 @@ python scripts/benchmark_student_formula_region.py \
 - `scripts/benchmark_student_formula_region.py`: benchmark a student-owned formula head
 - `scripts/benchmark_group_region.py`: grouped anchor-preserving region benchmark
 - `scripts/benchmark_rope_region.py`: two-rope point-region benchmark across budgets
+- `scripts/benchmark_hippo5_softbox_retrieval.py`: Hippo-5-style soft-box retrieval benchmark with large distractor pools
 - `scripts/benchmark_region_program_size.py`: dense-vs-sparse program size benchmark
 - `scripts/prepare_text_dataset.py`: download and export public text data to JSONL
 - `scripts/prepare_region_cases.py`: build region training cases from text JSONL via teacher-space neighbors
