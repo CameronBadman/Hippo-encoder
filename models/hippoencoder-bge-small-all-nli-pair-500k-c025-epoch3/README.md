@@ -11,6 +11,8 @@ The weight artifact is not committed directly to normal Git because `backbone/mo
 - Size: `124506335` bytes
 - SHA256: `629a57921357a1bf62646ec4ced78d01f3914e299ab118dedf54c7e0cb691837`
 
+An `xz -9e` artifact is also available at `/content/drive/MyDrive/hippo_encoder_runs/hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3.tar.xz`. It is `120507304` bytes with SHA256 `22ca9b219497fb8e7ea9c45df6d30608137fd2a8e50db3d290ddea8bd8a438d0`, so stronger compression still does not fit under GitHub's normal 100 MB limit.
+
 ## Use
 
 After downloading or copying the artifact locally:

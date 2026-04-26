@@ -10,6 +10,15 @@
     "sha256": "629a57921357a1bf62646ec4ced78d01f3914e299ab118dedf54c7e0cb691837",
     "github_distribution": "Use a GitHub Release asset or Git LFS. The raw safetensors file is larger than GitHub's normal 100 MB file limit."
   },
+  "alternative_artifacts": [
+    {
+      "filename": "hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3.tar.xz",
+      "source_colab_path": "/content/drive/MyDrive/hippo_encoder_runs/hippoencoder-bge-small-all-nli-pair-500k-c025-epoch3.tar.xz",
+      "size_bytes": 120507304,
+      "sha256": "22ca9b219497fb8e7ea9c45df6d30608137fd2a8e50db3d290ddea8bd8a438d0",
+      "note": "Created with xz -9e. Still above GitHub's normal 100 MB file limit."
+    }
+  ],
   "evaluation": {
     "semantic_eval": {
       "mean_teacher_student_cosine": 0.816081702709198,
